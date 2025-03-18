@@ -1,25 +1,105 @@
 #include "../include/database.h"
 #include "../include/display.h"
+#include <arpa/inet.h>
 #include <ndbm.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
 
-// Processes: Server --> Monitor --> Workers
-// socketpair
-// fork
-// socket/bind/listen
-// select/poll
-// accept add to select/poll
+#define N_WORKERS 3
+
+int  socketfork(void);
+void parent(int socket);
+void start_monitor(int socket);
+void worker(int socket);
 
 int main(void)
 {
-    DBM *db;
+    int status;
 
     display("---Robust Server---");
 
-    db = create_database();
+    status = socketfork();
+    if(status == -1)
+    {
+        perror("starting monitor");
+    }
 
-    insert_user_to_db(db);
+    sleep(2);    // NOLINT
 
     return EXIT_SUCCESS;
+}
+
+void worker(int socket)
+{
+    ssize_t bytes_read;
+    char    buffer[1024];    // NOLINT
+
+    bytes_read = read(socket, buffer, sizeof(buffer));
+    if(bytes_read < 0)
+    {
+        perror("read fail");
+        exit(EXIT_FAILURE);
+    }
+    if(bytes_read > 0)
+    {
+        printf("read in: %s\n", buffer);
+    }
+}
+
+void start_monitor(int socket)
+{
+    for(int i = 0; i < N_WORKERS; ++i)
+    {
+        int p = fork();
+        if(p == 0)
+        {
+            worker(socket);
+            break;
+        }
+        if(p < 0)
+        {
+            perror("fork fail");
+        }
+
+        printf("process spawned pid: %d\n", p);
+    }
+}
+
+// TEST SOCKETPAIR. CHANGE TO MAIN SERVER LOGIC
+void parent(int socket)
+{
+    const char hello[] = "sending socket";
+    sleep(2);    // NOLINT
+    write(socket, hello, sizeof(hello));
+}
+
+// create monitor with a shared domain socket
+int socketfork(void)
+{
+    int              fd[2];
+    pid_t            pid;
+    static const int parentsocket = 0;
+    static const int childsocket  = 1;
+
+    socketpair(PF_LOCAL, SOCK_STREAM, 0, fd);
+
+    pid = fork();
+    if(pid == 0)
+    {
+        close(fd[parentsocket]);
+        start_monitor(fd[childsocket]);
+    }
+    else if(pid > 0)
+    {
+        close(fd[childsocket]);
+        parent(fd[parentsocket]);
+    }
+    else
+    {
+        perror("fork");
+        return -1;
+    }
+
+    return 0;
 }
