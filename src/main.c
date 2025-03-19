@@ -32,46 +32,35 @@ int main(void)
     return EXIT_SUCCESS;
 }
 
-void worker(int domain_socket)
+_Noreturn void worker(int domain_socket)
 {
-    int     client_fd;
-    ssize_t bytes_read;
-    char    buffer[1024];    // NOLINT
+    char buffer[1024];    // NOLINT
 
-    // char buffer[1024];    // NOLINT
-    // while(1)
-    // {
-    //     ssize_t bytes_read;
-    //     bytes_read = read(domain_socket, buffer, sizeof(buffer));
-    //     if(bytes_read < 0)
-    //     {
-    //         perror("read fail");
-    //         exit(EXIT_FAILURE);
-    //     }
-    //     if(bytes_read > 0)
-    //     {
-    //         printf("read in: %s\n", buffer);
-    //     }
-    // }
-
-    client_fd = recv_fd(domain_socket);
-    if(client_fd < 0)
+    while(1)
     {
-        perror("recv fd");
-        exit(EXIT_FAILURE);
-    }
+        int     client_fd;
+        ssize_t bytes_read;
+        client_fd = recv_fd(domain_socket);
+        if(client_fd < 0)
+        {
+            perror("recv fd");
+            exit(EXIT_FAILURE);
+        }
 
-    printf("recieved fd: %d\nWorker: %d\n", client_fd, (int)getpid());
+        printf("recieved fd: %d\nWorker: %d\n", client_fd, (int)getpid());
 
-    bytes_read = read(domain_socket, buffer, sizeof(buffer));
-    if(bytes_read < 0)
-    {
-        perror("read fail");
-        exit(EXIT_FAILURE);
-    }
-    if(bytes_read > 0)
-    {
-        printf("read in: %s\n", buffer);
+        bytes_read = read(client_fd, buffer, sizeof(buffer));
+        if(bytes_read < 0)
+        {
+            perror("read fail");
+            exit(EXIT_FAILURE);
+        }
+        if(bytes_read > 0)
+        {
+            printf("read in: %s\n", buffer);
+        }
+
+        close(client_fd);
     }
 }
 
@@ -83,7 +72,7 @@ _Noreturn void start_monitor(int domain_socket)
         if(p == 0)
         {
             worker(domain_socket);
-            break;
+            // break;
         }
         if(p < 0)
         {
