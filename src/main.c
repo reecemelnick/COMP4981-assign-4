@@ -1,5 +1,6 @@
 #include "../include/database.h"
 #include "../include/display.h"
+#include "../include/network.h"
 #include <arpa/inet.h>
 #include <ndbm.h>
 #include <stdio.h>
@@ -27,27 +28,38 @@ int main(void)
 
     sleep(2);    // NOLINT
 
+    printf("handle main server process\n");
+
+    // SETUP NETWORK SOCKET TO ACCEPT CLIENTS
+    status = initialize_socket();
+    if(status == -1)
+    {
+        perror("network socket");
+    }
+
     return EXIT_SUCCESS;
 }
 
-void worker(int socket)
+_Noreturn void worker(int socket)
 {
-    ssize_t bytes_read;
-    char    buffer[1024];    // NOLINT
-
-    bytes_read = read(socket, buffer, sizeof(buffer));
-    if(bytes_read < 0)
+    char buffer[1024];    // NOLINT
+    while(1)
     {
-        perror("read fail");
-        exit(EXIT_FAILURE);
-    }
-    if(bytes_read > 0)
-    {
-        printf("read in: %s\n", buffer);
+        ssize_t bytes_read;
+        bytes_read = read(socket, buffer, sizeof(buffer));
+        if(bytes_read < 0)
+        {
+            perror("read fail");
+            exit(EXIT_FAILURE);
+        }
+        if(bytes_read > 0)
+        {
+            printf("read in: %s\n", buffer);
+        }
     }
 }
 
-void start_monitor(int socket)
+_Noreturn void start_monitor(int socket)
 {
     for(int i = 0; i < N_WORKERS; ++i)
     {
@@ -64,6 +76,10 @@ void start_monitor(int socket)
 
         printf("process spawned pid: %d\n", p);
     }
+
+    while(1)
+    {
+    };
 }
 
 // TEST SOCKETPAIR. CHANGE TO MAIN SERVER LOGIC
