@@ -1,8 +1,11 @@
 #include "../include/network.h"
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -49,18 +52,13 @@ int initialize_socket(void)
 
     printf("server listening for connections\n");
 
-    if(accept_clients(sockfd, host_addr, host_addrlen) < 0)
-    {
-        perror("Accept clients");
-        return -1;
-    }
-
-    close(sockfd);
-    return 0;
+    return sockfd;
 }
 
-int accept_clients(int server_sock, struct sockaddr_in host_addr, socklen_t host_addrlen)
+int accept_clients(int domain_sock, int server_sock, struct sockaddr_in client_addr, socklen_t client_addrlen)
 {
+    // const char hello[] = "sending socket";
+
     // poll server_socket for incoming data
     struct pollfd pfd = {server_sock, POLLIN, 0};
 
@@ -84,7 +82,7 @@ int accept_clients(int server_sock, struct sockaddr_in host_addr, socklen_t host
         // if poll output is POLLIN, accpect
         if(pfd.revents & POLLIN)
         {
-            int newsockfd = accept(server_sock, (struct sockaddr *)&host_addr, &host_addrlen);
+            int newsockfd = accept(server_sock, (struct sockaddr *)&client_addr, &client_addrlen);
             if(newsockfd < 0)
             {
                 perror("accept");
@@ -92,9 +90,69 @@ int accept_clients(int server_sock, struct sockaddr_in host_addr, socklen_t host
             }
 
             printf("Connection made\n");
-            close(newsockfd);
+
+            // write(domain_sock, hello, sizeof(hello));
+
+            send_fd(domain_sock, newsockfd);
         }
     }
 
     return server_sock;
+}
+
+void send_fd(int domain_socket, int fd)
+{
+    struct msghdr   msg = {0};    // holds both regular data and control data for passing file descriptors
+    struct iovec    io;           // holds dummy single byte buffer
+    char            buf[1] = {0};
+    struct cmsghdr *cmsg;
+    char            control[CMSG_SPACE(sizeof(int))];    // store file descriptor into control structure
+
+    io.iov_base        = buf;
+    io.iov_len         = sizeof(buf);
+    msg.msg_iov        = &io;
+    msg.msg_iovlen     = 1;
+    msg.msg_control    = control;
+    msg.msg_controllen = sizeof(control);
+
+    cmsg             = CMSG_FIRSTHDR(&msg);
+    cmsg->cmsg_level = SOL_SOCKET;
+    cmsg->cmsg_type  = SCM_RIGHTS;
+    cmsg->cmsg_len   = CMSG_LEN(sizeof(int));
+
+    memcpy(CMSG_DATA(cmsg), &fd, sizeof(int));
+
+    if(sendmsg(domain_socket, &msg, 0) < 0)
+    {
+        perror("sendmsg");
+        exit(EXIT_FAILURE);
+    }
+}
+
+int recv_fd(int socket)
+{
+    struct msghdr   msg = {0};
+    struct iovec    io;
+    char            buf[1];
+    struct cmsghdr *cmsg;
+    char            control[CMSG_SPACE(sizeof(int))];
+    int             fd;
+    io.iov_base        = buf;
+    io.iov_len         = sizeof(buf);
+    msg.msg_iov        = &io;
+    msg.msg_iovlen     = 1;
+    msg.msg_control    = control;
+    msg.msg_controllen = sizeof(control);
+    if(recvmsg(socket, &msg, 0) < 0)
+    {
+        perror("recvmsg");
+        exit(EXIT_FAILURE);
+    }
+    cmsg = CMSG_FIRSTHDR(&msg);
+    if(cmsg && cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_RIGHTS)
+    {
+        memcpy(&fd, CMSG_DATA(cmsg), sizeof(int));
+        return fd;
+    }
+    return -1;
 }
