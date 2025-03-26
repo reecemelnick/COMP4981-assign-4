@@ -55,6 +55,57 @@ int initialize_socket(void)
     return sockfd;
 }
 
+// FIGURE OUT WHAT THIS DOES
+void handle_new_connection(int sockfd, int **client_sockets, nfds_t *max_clients, struct pollfd **fds)
+{
+    if((*fds)[0].revents & POLLIN)
+    {
+        socklen_t          addrlen;
+        int                new_socket;
+        int               *temp;
+        struct sockaddr_in addr;
+
+        addrlen    = sizeof(addr);
+        new_socket = accept(sockfd, (struct sockaddr *)&addr, &addrlen);
+
+        if(new_socket == -1)
+        {
+            perror("Accept error");
+            exit(EXIT_FAILURE);
+        }
+
+        (*max_clients)++;
+        temp = (int *)realloc(*client_sockets, sizeof(int) * (*max_clients));
+
+        if(temp == NULL)
+        {
+            perror("realloc");
+            free(*client_sockets);
+            exit(EXIT_FAILURE);
+        }
+        else
+        {
+            struct pollfd *new_fds;
+            *client_sockets                       = temp;
+            (*client_sockets)[(*max_clients) - 1] = new_socket;
+
+            new_fds = (struct pollfd *)realloc(*fds, (*max_clients + 1) * sizeof(struct pollfd));
+            if(new_fds == NULL)
+            {
+                perror("realloc");
+                free(*client_sockets);
+                exit(EXIT_FAILURE);
+            }
+            else
+            {
+                *fds                        = new_fds;
+                (*fds)[*max_clients].fd     = new_socket;
+                (*fds)[*max_clients].events = POLLIN;
+            }
+        }
+    }
+}
+
 int accept_clients(int domain_sock, int server_sock, struct sockaddr_in client_addr, socklen_t client_addrlen)
 {
     // const char hello[] = "sending socket";
@@ -145,7 +196,6 @@ int recv_fd(int socket)
     msg.msg_controllen = sizeof(control);
     if(recvmsg(socket, &msg, 0) < 0)
     {
-        perror("recvmsg");
         exit(EXIT_FAILURE);
     }
     cmsg = CMSG_FIRSTHDR(&msg);
@@ -155,4 +205,35 @@ int recv_fd(int socket)
         return fd;
     }
     return -1;
+}
+
+struct pollfd *initialize_pollfds(int sockfd, int **client_sockets)
+{
+    struct pollfd *fds;
+
+    *client_sockets = NULL;
+
+    fds = (struct pollfd *)malloc((1) * sizeof(struct pollfd));
+
+    if(fds == NULL)
+    {
+        perror("malloc");
+        exit(EXIT_FAILURE);
+    }
+
+    fds[0].fd     = sockfd;
+    fds[0].events = POLLIN;
+
+    return fds;
+}
+
+void socket_close(int sockfd)
+{
+    if(close(sockfd) == -1)
+    {
+        perror("Error closing socket");
+        exit(EXIT_FAILURE);
+    }
+
+    printf("Socket closed.\n");
 }

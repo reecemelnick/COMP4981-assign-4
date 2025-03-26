@@ -2,17 +2,25 @@
 #include "../include/display.h"
 #include "../include/network.h"
 #include <arpa/inet.h>
+#include <errno.h>
+#include <poll.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 #define N_WORKERS 3
 
-int  socketfork(void);
-int  parent(int socket);
-void start_monitor(int socket);
-void worker(int socket);
+int         socketfork(void);
+int         parent(int socket);
+void        start_monitor(int socket);
+void        worker(int socket);
+static void setup_signal_handler(void);
+static void sigint_handler(int signum);
+
+static volatile sig_atomic_t exit_flag = 0;    // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
 
 int main(void)
 {
@@ -20,15 +28,17 @@ int main(void)
 
     display("---Robust Server---");
 
+    setup_signal_handler();
+
     status = socketfork();
     if(status == -1)
     {
         perror("starting monitor");
     }
 
-    sleep(2);    // NOLINT
+    printf("exiting program...\n");
+    sleep(1);    // NOLINT
 
-    printf("exiting program...");
     return EXIT_SUCCESS;
 }
 
@@ -36,7 +46,7 @@ _Noreturn void worker(int domain_socket)
 {
     char buffer[1024];    // NOLINT
 
-    while(1)
+    while(!exit_flag)
     {
         int     client_fd;
         ssize_t bytes_read;
@@ -48,6 +58,8 @@ _Noreturn void worker(int domain_socket)
         }
 
         printf("recieved fd: %d\nWorker: %d\n", client_fd, (int)getpid());
+
+        sleep(2);
 
         bytes_read = read(client_fd, buffer, sizeof(buffer));
         if(bytes_read < 0)
@@ -62,6 +74,8 @@ _Noreturn void worker(int domain_socket)
 
         close(client_fd);
     }
+
+    exit(EXIT_SUCCESS);
 }
 
 _Noreturn void start_monitor(int domain_socket)
@@ -83,17 +97,22 @@ _Noreturn void start_monitor(int domain_socket)
     }
 
     // MONITOR WORKER HEALTH
-    while(1)
+    while(!exit_flag)
     {
+        sleep(1);    // NOLINT
     }
+
+    exit(EXIT_SUCCESS);
 }
 
 // TEST SOCKETPAIR. CHANGE TO MAIN SERVER LOGIC
 int parent(int domain_socket)
 {
-    int                server_socket;
-    struct sockaddr_in client_addr = {0};
-    socklen_t          client_addrlen;
+    int server_socket;
+
+    int           *client_sockets = NULL;
+    nfds_t         max_clients    = 0;
+    struct pollfd *fds;
 
     // SETUP NETWORK SOCKET TO ACCEPT CLIENTS
     server_socket = initialize_socket();
@@ -103,12 +122,45 @@ int parent(int domain_socket)
         return -1;
     }
 
-    client_addrlen = sizeof(client_addr);
-    if(accept_clients(domain_socket, server_socket, client_addr, client_addrlen) < 0)
+    printf("Domain socket: %d\n", domain_socket);
+
+    printf("Polling for incoming connections...\n");
+    fds = initialize_pollfds(server_socket, &client_sockets);
+    printf("fds init...\n");
+
+    while(!exit_flag)
     {
-        perror("Accept clients");
-        return -1;
+        int activity;
+
+        activity = poll(fds, max_clients + 1, -1);
+        if(activity < 0)
+        {
+            if(errno == EINTR)
+            {
+                continue;
+            }
+
+            perror("Poll error");
+            exit(EXIT_FAILURE);
+        }
+
+        // TEST CONNECTIONS
+        handle_new_connection(server_socket, &client_sockets, &max_clients, &fds);
     }
+
+    free(fds);
+
+    // Cleanup and close all client sockets
+    for(size_t i = 0; i < max_clients; i++)
+    {
+        if(client_sockets[i] > 0)
+        {
+            socket_close(client_sockets[i]);
+        }
+    }
+
+    free(client_sockets);
+    socket_close(server_socket);
 
     return 0;
 }
@@ -118,18 +170,12 @@ int socketfork(void)
 {
     int              fd[2];
     pid_t            pid;
-    int              status;
     static const int parentsocket = 0;
     static const int childsocket  = 1;
 
     socketpair(PF_LOCAL, SOCK_STREAM, 0, fd);
 
     pid = fork();
-    if(pid < 0)
-    {
-        perror("fork");
-        return -1;
-    }
 
     // handle parent and child
     if(pid == 0)
@@ -137,14 +183,40 @@ int socketfork(void)
         close(fd[parentsocket]);
         start_monitor(fd[childsocket]);
     }
-
-    close(fd[childsocket]);
-    status = parent(fd[parentsocket]);
-    if(status == -1)
+    else if(pid > 0)
     {
-        perror("parent");
+        close(fd[childsocket]);
+        parent(fd[parentsocket]);
+    }
+
+    if(pid < 0)
+    {
+        perror("fork");
         return -1;
     }
 
     return 0;
+}
+
+static void setup_signal_handler(void)
+{
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+#if defined(__clang__)
+    #pragma clang diagnostic push
+    #pragma clang diagnostic ignored "-Wdisabled-macro-expansion"
+#endif
+    sa.sa_handler = sigint_handler;
+#if defined(__clang__)
+    #pragma clang diagnostic pop
+#endif
+    sigaction(SIGINT, &sa, NULL);
+}
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-parameter"
+
+static void sigint_handler(int signum)
+{
+    exit_flag = 1;
 }
