@@ -44,32 +44,38 @@ int main(void)
 
 _Noreturn void worker(int domain_socket)
 {
-    int client_fd;
-    client_fd = recv_fd(domain_socket);
-
-    if(client_fd < 0)
-    {
-        perror("recv fd");
-        exit(EXIT_FAILURE);
-    }
-
-    printf("recieved fd: %d\nWorker: %d\n", client_fd, (int)getpid());
-
-    // set_socket_nonblock(client_fd);
-
     while(!exit_flag)
     {
-        int work_done;
-        sleep(1);    // NOLINT
-
-        work_done = worker_handle_client(client_fd);
-        if(work_done == -1)
+        int client_fd;
+        int original_fd;
+        client_fd = recv_fd(domain_socket, &original_fd);
+        if(client_fd < 0)
         {
-            break;    // work is done. return socket for closure
+            perror("recv fd");
+            exit(EXIT_FAILURE);
         }
+        printf("recieved fd: %d\nWorker: %d\n", client_fd, (int)getpid());
+        printf("OG FD: %d\n", original_fd);
+
+        if(client_fd > 0)
+        {
+            while(1)
+            {
+                int work_done;
+                work_done = worker_handle_client(client_fd);
+                if(work_done == -1)
+                {
+                    printf("work done\n");
+                    break;
+                }
+
+                sleep(1);
+            }
+        }
+        close(client_fd);
+        write(domain_socket, &original_fd, sizeof(original_fd));    // send int of fd to close in parent
     }
 
-    close(client_fd);
     exit(EXIT_SUCCESS);
 }
 
@@ -123,9 +129,13 @@ int parent(int domain_socket)
     fds = initialize_pollfds(server_socket, &client_sockets);
     printf("fds init...\n");
 
+    set_socket_nonblock(domain_socket);
+
     while(!exit_flag)
     {
-        int activity;
+        int     activity;
+        int     fd_to_close;
+        ssize_t bytes_read;
 
         sleep(1);
 
@@ -150,6 +160,24 @@ int parent(int domain_socket)
             // Handle incoming data from existing clients
             // IF INCOMING DATA SEND FILE DESCRIPTOR TO WORKER
             handle_client_data(fds, client_sockets, &max_clients, domain_socket);
+        }
+
+        sleep(3);    // NOLINT
+
+        bytes_read = read(domain_socket, &fd_to_close, sizeof(fd_to_close));
+        if(bytes_read > 0)
+        {
+            printf("got of fd back: %d\n", fd_to_close);
+            for(nfds_t i = 0; i <= max_clients; i++)    // NOLINT
+            {
+                if(fds[i].fd == fd_to_close)
+                {
+                    printf("gonna DELETE\n");
+                    handle_client_disconnection(&client_sockets, &max_clients, &fds, (i - 1));
+                }
+            }
+
+            printf("size of client fd: %d\n", (int)max_clients);
         }
     }
 

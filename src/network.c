@@ -148,8 +148,6 @@ int worker_handle_client(int client_sock)
                                 "\r\n"
                                 "Hello, world!";
 
-    sleep(3);    // NOLINT
-
     valread = read(client_sock, word, MAX_WORD_LEN);
 
     printf("valread: %d\n", (int)valread);
@@ -234,12 +232,12 @@ void send_fd(int domain_socket, int fd)
 {
     struct msghdr   msg = {0};    // holds both regular data and control data for passing file descriptors
     struct iovec    io;           // holds dummy single byte buffer
-    char            buf[1] = {0};
+    int             data = fd;
     struct cmsghdr *cmsg;
     char            control[CMSG_SPACE(sizeof(int))];    // store file descriptor into control structure
 
-    io.iov_base        = buf;
-    io.iov_len         = sizeof(buf);
+    io.iov_base        = &data;
+    io.iov_len         = sizeof(data);
     msg.msg_iov        = &io;
     msg.msg_iovlen     = 1;
     msg.msg_control    = control;
@@ -259,16 +257,16 @@ void send_fd(int domain_socket, int fd)
     }
 }
 
-int recv_fd(int socket)
+int recv_fd(int socket, int *og_fd)
 {
     struct msghdr   msg = {0};
     struct iovec    io;
-    char            buf[1];
+    int             data = 0;
     struct cmsghdr *cmsg;
     char            control[CMSG_SPACE(sizeof(int))];
     int             fd;
-    io.iov_base        = buf;
-    io.iov_len         = sizeof(buf);
+    io.iov_base        = &data;
+    io.iov_len         = sizeof(data);
     msg.msg_iov        = &io;
     msg.msg_iovlen     = 1;
     msg.msg_control    = control;
@@ -281,6 +279,12 @@ int recv_fd(int socket)
     if(cmsg && cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_RIGHTS)
     {
         memcpy(&fd, CMSG_DATA(cmsg), sizeof(int));
+
+        if(og_fd)
+        {
+            *og_fd = data;
+        }
+
         return fd;
     }
     return -1;
