@@ -11,8 +11,73 @@
 #include <unistd.h>
 
 #define PORT 8000
-#define TIMEOUT 1000
 #define MAX_WORD_LEN 4096
+#define SOCKET_PATH "/tmp/domain_socket"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
+
+int create_domain_socket(void)
+{
+    int                sockfd;
+    struct sockaddr_un addr;
+
+    unlink(SOCKET_PATH);
+
+    sockfd = socket(AF_UNIX, SOCK_STREAM, 0);    // NOLINT
+    if(sockfd < 0)
+    {
+        perror("socket failed");
+        return -1;
+    }
+
+    memset(&addr, 0, sizeof(struct sockaddr_un));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, SOCKET_PATH, sizeof(addr.sun_path) - 1);
+
+    if(bind(sockfd, (struct sockaddr *)&addr, sizeof(addr)) == -1)
+    {
+        perror("bind failed");
+        close(sockfd);
+        return -1;
+    }
+
+    if(listen(sockfd, 5) == -1)    // NOLINT
+    {
+        perror("listen failed");
+        close(sockfd);
+        return -1;
+    }
+
+    return sockfd;
+}
+
+int connect_to_domain(void)
+{
+    struct sockaddr_un addr;
+    int                sockfd = socket(AF_UNIX, SOCK_STREAM, 0);    // NOLINT
+    if(sockfd < 0)
+    {
+        perror("socket failed");
+        exit(EXIT_FAILURE);
+    }
+
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, SOCKET_PATH, sizeof(addr.sun_path) - 1);
+
+    if(connect(sockfd, (struct sockaddr *)&addr, sizeof(addr)) == -1)
+    {
+        perror("connect failed");
+        close(sockfd);
+        exit(EXIT_FAILURE);
+    }
+    return sockfd;
+}
 
 int initialize_socket(void)
 {
@@ -61,6 +126,25 @@ void set_socket_nonblock(int sockfd)
     int flags;
     flags = fcntl(sockfd, F_GETFL, 0);
     fcntl(sockfd, F_SETFL, flags | O_NONBLOCK);
+}
+
+void set_fd_blocking(int fd)
+{
+    int flags;
+
+    // Get the current flags
+    flags = fcntl(fd, F_GETFL, 0);
+    if(flags == -1)
+    {
+        perror("fcntl(F_GETFL) failed");
+        return;
+    }
+
+    // Set the O_NONBLOCK flag to 0 (which makes the file descriptor blocking)
+    if(fcntl(fd, F_SETFL, flags & ~O_NONBLOCK) == -1)
+    {
+        perror("fcntl(F_SETFL) failed");
+    }
 }
 
 // FIGURE OUT WHAT THIS DOES
@@ -112,10 +196,10 @@ void handle_new_connection(int sockfd, int **client_sockets, nfds_t *max_clients
             }
         }
 
-        printf("connection made\n");
         for(int i = 0; i < (int)*max_clients; i++)
         {
             printf("client fd: %d\n", (*client_sockets)[i]);
+            printf("max clients: %d\n", (int)(*max_clients));
         }
     }
 }
@@ -138,6 +222,7 @@ void handle_client_disconnection(int **client_sockets, nfds_t *max_clients, stru
     }
 }
 
+// ALL THIS WORK NEEDS TO BE IN DYNAMIC LIB
 int worker_handle_client(int client_sock)
 {
     ssize_t     valread;
@@ -150,82 +235,48 @@ int worker_handle_client(int client_sock)
 
     valread = read(client_sock, word, MAX_WORD_LEN);
 
-    printf("valread: %d\n", (int)valread);
-
     if(valread <= 0)
     {
         // Connection closed or error
-        printf("Client %d disconnected\n", client_sock);
         return -1;
-        // handle_client_disconnection(&client_sockets, max_clients, &fds, i);
     }
 
     word[valread] = '\0';
     printf("Received word from client %d: %s\n", client_sock, word);
-    write(client_sock, http_response, strlen(http_response));    // NOLINT
+    write(client_sock, http_response, strlen(http_response));
 
     return 0;
 }
 
-void handle_client_data(const struct pollfd *fds, const int *client_sockets, const nfds_t *max_clients, int domain_sock)
+void read_original_fd(int domain_socket, int **client_sockets, struct pollfd **fds, nfds_t *max_clients)
 {
-    for(nfds_t i = 0; i < *max_clients; i++)
+    int     fd_to_close;
+    ssize_t bytes_read;
+
+    bytes_read = read(domain_socket, &fd_to_close, sizeof(fd_to_close));
+    if(bytes_read > 0)
     {
-        if(client_sockets[i] != -1 && (fds[i + 1].revents & POLLIN))
+        for(nfds_t i = 0; i <= *max_clients; i++)    // NOLINT
+        {
+            if((*fds)[i].fd == fd_to_close)
+            {
+                handle_client_disconnection(client_sockets, max_clients, fds, (i - 1));
+            }
+        }
+    }
+}
+
+void handle_client_data(struct pollfd *fds, int *client_sockets, nfds_t *max_clients, int domain_sock)
+{
+    for(nfds_t i = 0; i <= *max_clients; i++)
+    {
+        if(*max_clients > 0 && client_sockets[i] != -1 && (fds[i + 1].revents & POLLIN))
         {
             send_fd(domain_sock, client_sockets[i]);
-        }
-    }
-}
-
-void handle_new_socket(void)
-{
-    sleep(3);    // NOLINT
-}
-
-int accept_clients(int domain_sock, int server_sock, struct sockaddr_in client_addr, socklen_t client_addrlen)
-{
-    // const char hello[] = "sending socket";
-
-    // poll server_socket for incoming data
-    struct pollfd pfd = {server_sock, POLLIN, 0};
-
-    while(1)
-    {
-        // poll to see if server has data to read
-        int ret = poll(&pfd, 1, TIMEOUT);
-
-        // if timeout expired, continue polling fd
-        if(ret == 0)
-        {
-            continue;
-        }
-
-        // if error occured break loop
-        if(ret < 0)
-        {
+            read_original_fd(domain_sock, &client_sockets, &fds, max_clients);
             break;
         }
-
-        // if poll output is POLLIN, accpect
-        if(pfd.revents & POLLIN)
-        {
-            int newsockfd = accept(server_sock, (struct sockaddr *)&client_addr, &client_addrlen);
-            if(newsockfd < 0)
-            {
-                perror("accept");
-                break;
-            }
-
-            printf("Connection made\n");
-
-            // write(domain_sock, hello, sizeof(hello));
-
-            send_fd(domain_sock, newsockfd);
-        }
     }
-
-    return server_sock;
 }
 
 void send_fd(int domain_socket, int fd)
@@ -273,6 +324,7 @@ int recv_fd(int socket, int *og_fd)
     msg.msg_controllen = sizeof(control);
     if(recvmsg(socket, &msg, 0) < 0)
     {
+        perror("recv");
         exit(EXIT_FAILURE);
     }
     cmsg = CMSG_FIRSTHDR(&msg);

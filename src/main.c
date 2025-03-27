@@ -3,11 +3,14 @@
 #include "../include/network.h"
 #include <arpa/inet.h>
 #include <errno.h>
+#include <netinet/in.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -44,6 +47,7 @@ int main(void)
 
 _Noreturn void worker(int domain_socket)
 {
+    set_fd_blocking(domain_socket);
     while(!exit_flag)
     {
         int client_fd;
@@ -54,8 +58,6 @@ _Noreturn void worker(int domain_socket)
             perror("recv fd");
             exit(EXIT_FAILURE);
         }
-        printf("recieved fd: %d\nWorker: %d\n", client_fd, (int)getpid());
-        printf("OG FD: %d\n", original_fd);
 
         if(client_fd > 0)
         {
@@ -65,10 +67,8 @@ _Noreturn void worker(int domain_socket)
                 work_done = worker_handle_client(client_fd);
                 if(work_done == -1)
                 {
-                    printf("work done\n");
                     break;
                 }
-
                 sleep(1);
             }
         }
@@ -76,6 +76,7 @@ _Noreturn void worker(int domain_socket)
         write(domain_socket, &original_fd, sizeof(original_fd));    // send int of fd to close in parent
     }
 
+    printf("Worker exiting...\n");
     exit(EXIT_SUCCESS);
 }
 
@@ -87,7 +88,6 @@ _Noreturn void start_monitor(int domain_socket)
         if(p == 0)
         {
             worker(domain_socket);
-            // break;
         }
         if(p < 0)
         {
@@ -123,24 +123,16 @@ int parent(int domain_socket)
         return -1;
     }
 
-    printf("Domain socket: %d\n", domain_socket);
-
-    printf("Polling for incoming connections...\n");
     fds = initialize_pollfds(server_socket, &client_sockets);
-    printf("fds init...\n");
 
     set_socket_nonblock(domain_socket);
 
     while(!exit_flag)
     {
-        int     activity;
-        int     fd_to_close;
-        ssize_t bytes_read;
-
-        sleep(1);
+        int activity;
 
         // poll for connection attempt
-        activity = poll(fds, max_clients + 1, -1);
+        activity = poll(fds, max_clients + 1, 1000);    //  NOLINT
         if(activity < 0)
         {
             if(errno == EINTR)
@@ -160,24 +152,6 @@ int parent(int domain_socket)
             // Handle incoming data from existing clients
             // IF INCOMING DATA SEND FILE DESCRIPTOR TO WORKER
             handle_client_data(fds, client_sockets, &max_clients, domain_socket);
-        }
-
-        sleep(3);    // NOLINT
-
-        bytes_read = read(domain_socket, &fd_to_close, sizeof(fd_to_close));
-        if(bytes_read > 0)
-        {
-            printf("got of fd back: %d\n", fd_to_close);
-            for(nfds_t i = 0; i <= max_clients; i++)    // NOLINT
-            {
-                if(fds[i].fd == fd_to_close)
-                {
-                    printf("gonna DELETE\n");
-                    handle_client_disconnection(&client_sockets, &max_clients, &fds, (i - 1));
-                }
-            }
-
-            printf("size of client fd: %d\n", (int)max_clients);
         }
     }
 
@@ -204,25 +178,44 @@ int parent(int domain_socket)
 // create monitor with a shared domain socket
 int socketfork(void)
 {
-    int              fd[2];
-    pid_t            pid;
-    static const int parentsocket = 0;
-    static const int childsocket  = 1;
+    // int              fd[2];
+    int   fd;
+    int   client_socket;
+    pid_t pid;
+    // static const int parentsocket = 0;
+    // static const int childsocket  = 1;
 
-    socketpair(PF_LOCAL, SOCK_STREAM, 0, fd);
+    // socketpair(PF_LOCAL, SOCK_STREAM, 0, fd);
+
+    fd = create_domain_socket();
 
     pid = fork();
 
     // handle parent and child
     if(pid == 0)
     {
-        close(fd[parentsocket]);
-        start_monitor(fd[childsocket]);
+        close(fd);
+        client_socket = connect_to_domain();
+        if(client_socket < 0)
+        {
+            perror("Failed to connect in child");
+            exit(EXIT_FAILURE);
+        }
+        start_monitor(client_socket);
+        close(client_socket);
     }
     else if(pid > 0)
     {
-        close(fd[childsocket]);
-        parent(fd[parentsocket]);
+        client_socket = accept(fd, NULL, NULL);
+        if(client_socket == -1)
+        {
+            perror("accept");
+            close(fd);
+            exit(EXIT_FAILURE);
+        }
+
+        parent(client_socket);
+        close(client_socket);
     }
 
     if(pid < 0)
@@ -231,6 +224,7 @@ int socketfork(void)
         return -1;
     }
 
+    close(fd);
     return 0;
 }
 
