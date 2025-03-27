@@ -5,6 +5,8 @@
         "database.h": "c",
         "in.h": "c",
         "network.h": "c",
-        "poll.h": "c"
+        "poll.h": "c",
+        "ios": "c",
+        "inet.h": "c"
     }
 }

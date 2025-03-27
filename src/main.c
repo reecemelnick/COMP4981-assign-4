@@ -44,37 +44,32 @@ int main(void)
 
 _Noreturn void worker(int domain_socket)
 {
-    char buffer[1024];    // NOLINT
+    int client_fd;
+    client_fd = recv_fd(domain_socket);
+
+    if(client_fd < 0)
+    {
+        perror("recv fd");
+        exit(EXIT_FAILURE);
+    }
+
+    printf("recieved fd: %d\nWorker: %d\n", client_fd, (int)getpid());
+
+    // set_socket_nonblock(client_fd);
 
     while(!exit_flag)
     {
-        int     client_fd;
-        ssize_t bytes_read;
-        client_fd = recv_fd(domain_socket);
-        if(client_fd < 0)
+        int work_done;
+        sleep(1);    // NOLINT
+
+        work_done = worker_handle_client(client_fd);
+        if(work_done == -1)
         {
-            perror("recv fd");
-            exit(EXIT_FAILURE);
+            break;    // work is done. return socket for closure
         }
-
-        printf("recieved fd: %d\nWorker: %d\n", client_fd, (int)getpid());
-
-        sleep(2);
-
-        bytes_read = read(client_fd, buffer, sizeof(buffer));
-        if(bytes_read < 0)
-        {
-            perror("read fail");
-            exit(EXIT_FAILURE);
-        }
-        if(bytes_read > 0)
-        {
-            printf("read in: %s\n", buffer);
-        }
-
-        close(client_fd);
     }
 
+    close(client_fd);
     exit(EXIT_SUCCESS);
 }
 
@@ -112,7 +107,7 @@ int parent(int domain_socket)
 
     int           *client_sockets = NULL;
     nfds_t         max_clients    = 0;
-    struct pollfd *fds;
+    struct pollfd *fds;    // keeping track of all fds
 
     // SETUP NETWORK SOCKET TO ACCEPT CLIENTS
     server_socket = initialize_socket();
@@ -132,6 +127,9 @@ int parent(int domain_socket)
     {
         int activity;
 
+        sleep(1);
+
+        // poll for connection attempt
         activity = poll(fds, max_clients + 1, -1);
         if(activity < 0)
         {
@@ -146,6 +144,13 @@ int parent(int domain_socket)
 
         // TEST CONNECTIONS
         handle_new_connection(server_socket, &client_sockets, &max_clients, &fds);
+
+        if(client_sockets != NULL)
+        {
+            // Handle incoming data from existing clients
+            // IF INCOMING DATA SEND FILE DESCRIPTOR TO WORKER
+            handle_client_data(fds, client_sockets, &max_clients, domain_socket);
+        }
     }
 
     free(fds);
@@ -153,9 +158,12 @@ int parent(int domain_socket)
     // Cleanup and close all client sockets
     for(size_t i = 0; i < max_clients; i++)
     {
-        if(client_sockets[i] > 0)
+        if(client_sockets != NULL)
         {
-            socket_close(client_sockets[i]);
+            if(client_sockets[i] > 0)
+            {
+                socket_close(client_sockets[i]);
+            }
         }
     }
 

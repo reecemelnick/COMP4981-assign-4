@@ -9,3 +9,8 @@ int            recv_fd(int socket);
 struct pollfd *initialize_pollfds(int sockfd, int **client_sockets);
 void           handle_new_connection(int sockfd, int **client_sockets, nfds_t *max_clients, struct pollfd **fds);
 void           socket_close(int sockfd);
+void           set_socket_nonblock(int sockfd);
+void           handle_new_socket(void);
+void           handle_client_data(const struct pollfd *fds, const int *client_sockets, const nfds_t *max_clients, int domain_sock);
+void           handle_client_disconnection(int **client_sockets, nfds_t *max_clients, struct pollfd **fds, nfds_t client_index);
+int            worker_handle_client(int client_sock);

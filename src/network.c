@@ -12,6 +12,7 @@
 
 #define PORT 8000
 #define TIMEOUT 1000
+#define MAX_WORD_LEN 4096
 
 int initialize_socket(void)
 {
@@ -53,6 +54,13 @@ int initialize_socket(void)
     printf("server listening for connections\n");
 
     return sockfd;
+}
+
+void set_socket_nonblock(int sockfd)
+{
+    int flags;
+    flags = fcntl(sockfd, F_GETFL, 0);
+    fcntl(sockfd, F_SETFL, flags | O_NONBLOCK);
 }
 
 // FIGURE OUT WHAT THIS DOES
@@ -103,7 +111,78 @@ void handle_new_connection(int sockfd, int **client_sockets, nfds_t *max_clients
                 (*fds)[*max_clients].events = POLLIN;
             }
         }
+
+        printf("connection made\n");
+        for(int i = 0; i < (int)*max_clients; i++)
+        {
+            printf("client fd: %d\n", (*client_sockets)[i]);
+        }
     }
+}
+
+void handle_client_disconnection(int **client_sockets, nfds_t *max_clients, struct pollfd **fds, nfds_t client_index)
+{
+    int disconnected_socket = (*client_sockets)[client_index];
+    close(disconnected_socket);
+
+    for(nfds_t i = client_index; i < *max_clients - 1; i++)
+    {
+        (*client_sockets)[i] = (*client_sockets)[i + 1];
+    }
+
+    (*max_clients)--;
+
+    for(nfds_t i = client_index + 1; i <= *max_clients; i++)
+    {
+        (*fds)[i] = (*fds)[i + 1];
+    }
+}
+
+int worker_handle_client(int client_sock)
+{
+    ssize_t     valread;
+    char        word[MAX_WORD_LEN];
+    const char *http_response = "HTTP/1.0 200 OK\r\n"
+                                "Content-Type: text/plain\r\n"
+                                "Content-Length: 13\r\n"
+                                "\r\n"
+                                "Hello, world!";
+
+    sleep(3);    // NOLINT
+
+    valread = read(client_sock, word, MAX_WORD_LEN);
+
+    printf("valread: %d\n", (int)valread);
+
+    if(valread <= 0)
+    {
+        // Connection closed or error
+        printf("Client %d disconnected\n", client_sock);
+        return -1;
+        // handle_client_disconnection(&client_sockets, max_clients, &fds, i);
+    }
+
+    word[valread] = '\0';
+    printf("Received word from client %d: %s\n", client_sock, word);
+    write(client_sock, http_response, strlen(http_response));    // NOLINT
+
+    return 0;
+}
+
+void handle_client_data(const struct pollfd *fds, const int *client_sockets, const nfds_t *max_clients, int domain_sock)
+{
+    for(nfds_t i = 0; i < *max_clients; i++)
+    {
+        if(client_sockets[i] != -1 && (fds[i + 1].revents & POLLIN))
+        {
+            send_fd(domain_sock, client_sockets[i]);
+        }
+    }
+}
+
+void handle_new_socket(void)
+{
+    sleep(3);    // NOLINT
 }
 
 int accept_clients(int domain_sock, int server_sock, struct sockaddr_in client_addr, socklen_t client_addrlen)
