@@ -85,7 +85,7 @@ void worker(int domain_socket)
     int (*worker_handle)(int);
     struct stat lib_stat;
     struct stat prev_lib_stat;
-    const char *lib_path = "/home/reece/Documents/COMP4981/COMP4981-assign-4/src/libmylib.so";
+    const char *lib_path = "/Users/reecemelnick/Desktop/COMP4981/assign4/src/libmylib.so";
 
     if(stat(lib_path, &prev_lib_stat) == -1)
     {

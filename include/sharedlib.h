@@ -17,3 +17,8 @@ void        form_response(int newsockfd, const char *status, int content_length,
 void        format_time(struct tm tm_result, char *time_buffer);
 int         is_directory(const char *filepath);
 int         get_file_size(const char *filepath);
+int         handle_post_request(const char *uri, int client_sock, char *request_body);
+int         add_to_db(char *key_str, char *value_str, size_t value_len);
+void        read_all_entries(const char *db_file);
+int         find_in_db(char *key_str, char *returned_value, size_t max_len);
+int         fetch_entry(const char *uri, const char *method, int client_sock);
