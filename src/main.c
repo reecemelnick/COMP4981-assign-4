@@ -2,6 +2,7 @@
 #include "../include/display.h"
 #include "../include/network.h"
 #include <arpa/inet.h>
+#include <dlfcn.h>
 #include <errno.h>
 #include <netinet/in.h>
 #include <poll.h>
@@ -10,8 +11,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 #define N_WORKERS 3
@@ -22,7 +25,7 @@ void        start_monitor(int socket);
 void        worker(int socket);
 static void setup_signal_handler(void);
 static void sigint_handler(int signum);
-
+int (*load_lib(void **handle, const char *lib_path))(int);
 static volatile sig_atomic_t exit_flag = 0;    // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
 
 int main(void)
@@ -45,9 +48,57 @@ int main(void)
     return EXIT_SUCCESS;
 }
 
-_Noreturn void worker(int domain_socket)
+int (*load_lib(void **handle, const char *lib_path))(int)
 {
-    set_fd_blocking(domain_socket);
+    union
+    {
+        void *ptr;
+        int (*func)(int);
+    } cast_helper;
+
+    int (*worker_handle_so)(int) = NULL;
+
+    *handle = dlopen(lib_path, RTLD_LAZY);
+    if(*handle == NULL)
+    {
+        fprintf(stderr, "dlopen failed: %s\n", dlerror());
+        return NULL;
+    }
+
+    cast_helper.ptr  = dlsym(*handle, "worker_handle_so");
+    worker_handle_so = cast_helper.func;
+    // worker_handle_so = (int (*)(int))dlsym(*handle, "worker_handle_so");
+
+    if(!worker_handle_so)
+    {
+        fprintf(stderr, "dlsym failed for worker_handle_so: %s\n", dlerror());
+        dlclose(*handle);
+        return NULL;
+    }
+
+    return worker_handle_so;
+}
+
+void worker(int domain_socket)
+{
+    void *handle;
+    int (*worker_handle)(int);
+    struct stat lib_stat;
+    struct stat prev_lib_stat;
+    const char *lib_path = "/home/reece/Documents/COMP4981/COMP4981-assign-4/src/libmylib.so";
+
+    if(stat(lib_path, &prev_lib_stat) == -1)
+    {
+        perror("stat failed");
+        return;
+    }
+
+    worker_handle = load_lib(&handle, lib_path);
+    if(!worker_handle)
+    {
+        exit(EXIT_FAILURE);
+    }
+
     while(!exit_flag)
     {
         int client_fd;
@@ -59,29 +110,57 @@ _Noreturn void worker(int domain_socket)
             exit(EXIT_FAILURE);
         }
 
+        if(stat(lib_path, &lib_stat) == -1)
+        {
+            perror("stat failed");
+            break;
+        }
+
+        if(lib_stat.st_mtime != prev_lib_stat.st_mtime)
+        {
+            printf("Library updated. Reloading...\n");
+
+            dlclose(handle);
+            worker_handle = load_lib(&handle, lib_path);
+            if(!worker_handle)
+            {
+                break;
+            }
+
+            prev_lib_stat = lib_stat;
+        }
+
         if(client_fd > 0)
         {
             while(1)
             {
                 int work_done;
-                work_done = worker_handle_client(client_fd);
+                work_done = worker_handle(client_fd);
+
+                if(work_done == 0)
+                {
+                    printf("DONE: %d\n", getpid());
+                    printf("sending: %d\n", original_fd);    // NOLINT
+                    write(domain_socket, &original_fd, sizeof(original_fd));
+                    close(client_fd);    // send int of fd to close in parent
+                }
                 if(work_done == -1)
                 {
                     break;
                 }
-                sleep(1);
             }
         }
-        close(client_fd);
-        write(domain_socket, &original_fd, sizeof(original_fd));    // send int of fd to close in parent
+        close(client_fd);    // NOLINT
     }
-
+    dlclose(handle);
     printf("Worker exiting...\n");
     exit(EXIT_SUCCESS);
 }
 
 _Noreturn void start_monitor(int domain_socket)
 {
+    pid_t workers[N_WORKERS];
+
     for(int i = 0; i < N_WORKERS; ++i)
     {
         int p = fork();
@@ -94,15 +173,56 @@ _Noreturn void start_monitor(int domain_socket)
             perror("fork fail");
         }
 
+        workers[i] = p;
         printf("process spawned pid: %d\n", p);
     }
 
     // MONITOR WORKER HEALTH
     while(!exit_flag)
     {
+        for(int i = 0; i < N_WORKERS; ++i)
+        {
+            int   status;
+            pid_t result = waitpid(workers[i], &status, WNOHANG);
+
+            if(result == -1)
+            {
+                perror("waitpid failed");
+                continue;
+            }
+
+            if(result == 0)
+            {
+                continue;
+            }
+
+            // worker killed, spawn new
+            if(WIFEXITED(status) || WIFSIGNALED(status))
+            {
+                pid_t p;
+                printf("Worker %d exited, restarting worker...\n", workers[i]);
+                sleep(5);    // NOLINT
+                p = fork();
+                if(p == 0)
+                {
+                    worker(domain_socket);
+                    exit(EXIT_SUCCESS);
+                }
+                if(p < 0)
+                {
+                    perror("fork failed");
+                    exit(EXIT_FAILURE);
+                }
+
+                workers[i] = p;
+                printf("Re-spawned worker with pid: %d\n", p);
+            }
+        }
+
         sleep(1);    // NOLINT
     }
 
+    close(domain_socket);
     exit(EXIT_SUCCESS);
 }
 
@@ -153,6 +273,7 @@ int parent(int domain_socket)
             // IF INCOMING DATA SEND FILE DESCRIPTOR TO WORKER
             handle_client_data(fds, client_sockets, &max_clients, domain_socket);
         }
+        read_original_fd(domain_socket, &client_sockets, &fds, &max_clients);
     }
 
     free(fds);
@@ -178,14 +299,9 @@ int parent(int domain_socket)
 // create monitor with a shared domain socket
 int socketfork(void)
 {
-    // int              fd[2];
     int   fd;
     int   client_socket;
     pid_t pid;
-    // static const int parentsocket = 0;
-    // static const int childsocket  = 1;
-
-    // socketpair(PF_LOCAL, SOCK_STREAM, 0, fd);
 
     fd = create_domain_socket();
 
@@ -202,7 +318,6 @@ int socketfork(void)
             exit(EXIT_FAILURE);
         }
         start_monitor(client_socket);
-        close(client_socket);
     }
     else if(pid > 0)
     {

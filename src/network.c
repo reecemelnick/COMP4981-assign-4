@@ -1,5 +1,6 @@
 #include "../include/network.h"
 #include <arpa/inet.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <poll.h>
@@ -8,10 +9,10 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
 
 #define PORT 8000
-#define MAX_WORD_LEN 4096
 #define SOCKET_PATH "/tmp/domain_socket"
 
 #include <stdio.h>
@@ -196,10 +197,10 @@ void handle_new_connection(int sockfd, int **client_sockets, nfds_t *max_clients
             }
         }
 
+        printf("max clients: %d\n", (int)(*max_clients));
         for(int i = 0; i < (int)*max_clients; i++)
         {
             printf("client fd: %d\n", (*client_sockets)[i]);
-            printf("max clients: %d\n", (int)(*max_clients));
         }
     }
 }
@@ -222,59 +223,36 @@ void handle_client_disconnection(int **client_sockets, nfds_t *max_clients, stru
     }
 }
 
-// ALL THIS WORK NEEDS TO BE IN DYNAMIC LIB
-int worker_handle_client(int client_sock)
-{
-    ssize_t     valread;
-    char        word[MAX_WORD_LEN];
-    const char *http_response = "HTTP/1.0 200 OK\r\n"
-                                "Content-Type: text/plain\r\n"
-                                "Content-Length: 13\r\n"
-                                "\r\n"
-                                "Hello, world!";
-
-    valread = read(client_sock, word, MAX_WORD_LEN);
-
-    if(valread <= 0)
-    {
-        // Connection closed or error
-        return -1;
-    }
-
-    word[valread] = '\0';
-    printf("Received word from client %d: %s\n", client_sock, word);
-    write(client_sock, http_response, strlen(http_response));
-
-    return 0;
-}
-
 void read_original_fd(int domain_socket, int **client_sockets, struct pollfd **fds, nfds_t *max_clients)
 {
     int     fd_to_close;
     ssize_t bytes_read;
 
+    set_socket_nonblock(domain_socket);
+
     bytes_read = read(domain_socket, &fd_to_close, sizeof(fd_to_close));
+
     if(bytes_read > 0)
     {
-        for(nfds_t i = 0; i <= *max_clients; i++)    // NOLINT
+        for(nfds_t i = 0; i < *max_clients; i++)    // NOLINT
         {
-            if((*fds)[i].fd == fd_to_close)
+            if((*fds)[i + 1].fd == fd_to_close)
             {
-                handle_client_disconnection(client_sockets, max_clients, fds, (i - 1));
+                handle_client_disconnection(client_sockets, max_clients, fds, i);
             }
         }
+        return;
     }
 }
 
-void handle_client_data(struct pollfd *fds, int *client_sockets, nfds_t *max_clients, int domain_sock)
+void handle_client_data(struct pollfd *fds, const int *client_sockets, const nfds_t *max_clients, int domain_sock)
 {
-    for(nfds_t i = 0; i <= *max_clients; i++)
+    for(nfds_t i = 0; i < *max_clients; i++)
     {
         if(*max_clients > 0 && client_sockets[i] != -1 && (fds[i + 1].revents & POLLIN))
         {
             send_fd(domain_sock, client_sockets[i]);
-            read_original_fd(domain_sock, &client_sockets, &fds, max_clients);
-            break;
+            fds[i + 1].events = 0;
         }
     }
 }
@@ -324,7 +302,10 @@ int recv_fd(int socket, int *og_fd)
     msg.msg_controllen = sizeof(control);
     if(recvmsg(socket, &msg, 0) < 0)
     {
-        perror("recv");
+        if(errno != EINTR)
+        {
+            perror("recv");
+        }
         exit(EXIT_FAILURE);
     }
     cmsg = CMSG_FIRSTHDR(&msg);

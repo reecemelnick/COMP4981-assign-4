@@ -10,6 +10,7 @@
         "inet.h": "c",
         "unistd.h": "c",
         "types.h": "c",
-        "socket.h": "c"
+        "socket.h": "c",
+        "string.h": "c"
     }
 }
