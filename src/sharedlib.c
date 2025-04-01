@@ -13,8 +13,29 @@
 #include <time.h>
 #include <unistd.h>
 
+#ifdef __APPLE__
+typedef size_t datum_size;
+#else
+typedef int datum_size;
+#endif
+
+typedef struct
+{
+    const void *dptr;
+    datum_size  dsize;
+} const_datum;
+
+#define MAKE_CONST_DATUM(str) ((const_datum){(str), (datum_size)strlen(str) + 1})
+
+#define TO_SIZE_T(x) ((size_t)(x))
+
+static char *retrieve_string(DBM *db, const char *key);
+static int   store_string(DBM *db, const char *key, const char *value);
+
 #define BUFFER_SIZE 4096
 #define TIME_BUFFER 64
+#define MAX_KEY_LEN 1000
+#define MAX_VALUE_LEN 3000
 
 #define OK_STATUS 200
 #define FILE_NOT_FOUND 404
@@ -47,36 +68,27 @@ int worker_handle_so(int client_sock)
     sscanf(buffer, "%15s %255s %15s", method, uri, version);
     printf("%s %s %s\n", method, uri, version);
 
+    // make method is accepted
     retval = verify_method(method);
     if(retval == -1)
     {
-        const char *error_message = "<html><body><h1>405 Method Not Allowed</h1></body></html>";
-        form_response(client_sock, "405 Method Not Allowed", (int)strlen(error_message), "text/html");
-        write(client_sock, error_message, strlen(error_message));
+        handle_verify_method_error(client_sock);
         return 0;
     }
 
-    if(strcmp(method, "POST") == 0)
-    {
-        printf("BUF: %s\n", buffer);
-        retval = handle_post_request(uri, client_sock, buffer);
-        return retval;
-    }
-
+    // check version and uri
     retval = check_http_format(version, uri);
     if(retval == -1)
     {
-        if(strcmp(method, "GET") == 0)
-        {
-            const char *error_message = "<html><body><h1>400 Bad Request</h1></body></html>";
-            form_response(client_sock, "400 Bad Request", (int)strlen(error_message), "text/html");
-            write(client_sock, error_message, strlen(error_message));
-        }
-        else if(strcmp(method, "HEAD") == 0)
-        {
-            form_response(client_sock, "400 Bad Request", 0, "text/html");
-        }
+        handle_check_format_error(method, client_sock);
         return 0;
+    }
+
+    // handle post request, writing to DB
+    if(strcmp(method, "POST") == 0)
+    {
+        retval = handle_post_request(uri, client_sock, buffer);
+        return retval;
     }
 
     // GET FROM DATABASE
@@ -95,64 +107,101 @@ int worker_handle_so(int client_sock)
     retval = serve_file(uri, method, client_sock);
     if(retval != OK_STATUS)
     {
-        if(retval == FILE_NOT_FOUND)
-        {
-            if(strcmp(method, "GET") == 0)
-            {
-                const char *error_message = "<html><body><h1>404 Not Found</h1></body></html>";
-                form_response(client_sock, "404 Not Found", (int)strlen(error_message), "text/html");
-                write(client_sock, error_message, strlen(error_message));
-            }
-            else if(strcmp(method, "HEAD") == 0)
-            {
-                form_response(client_sock, "404 Not Found", 0, "text/html");
-            }
-        }
-
-        if(retval == PERMISSION_DENIED)
-        {
-            if(strcmp(method, "GET") == 0)
-            {
-                const char *error_message = "<html><body><h1>403 Forbidden</h1></body></html>";
-                form_response(client_sock, "403 Forbidden", (int)strlen(error_message), "text/html");
-                write(client_sock, error_message, strlen(error_message));
-            }
-            else if(strcmp(method, "HEAD") == 0)
-            {
-                form_response(client_sock, "403 Forbidden", 0, "text/html");
-            }
-        }
+        handle_file_serve_error(method, retval, client_sock);
         return 0;
     }
 
     return 0;
 }
 
-int add_to_db(char *key_str, char *value_str, size_t value_len)
+void handle_check_format_error(const char *method, int client_sock)
 {
-    DBM  *db;
-    datum key;
-    datum value;
+    if(strcmp(method, "GET") == 0)
+    {
+        const char *error_message = "<html><body><h1>400 Bad Request</h1></body></html>";
+        form_response(client_sock, "400 Bad Request", (int)strlen(error_message), "text/html");
+        write(client_sock, error_message, strlen(error_message));
+    }
+    else if(strcmp(method, "HEAD") == 0)
+    {
+        form_response(client_sock, "400 Bad Request", 0, "text/html");
+    }
+}
 
-    db = dbm_open("/Users/reecemelnick/Desktop/COMP4981/assign4/database", O_RDWR | O_CREAT, 0644);    // NOLINT
+void handle_file_serve_error(const char *method, int retval, int client_sock)
+{
+    if(retval == FILE_NOT_FOUND)
+    {
+        handle_file_not_found(method, client_sock);
+    }
+
+    if(retval == PERMISSION_DENIED)
+    {
+        handle_forbidden(method, client_sock);
+    }
+}
+
+void handle_verify_method_error(int client_sock)
+{
+    const char *error_message = "<html><body><h1>405 Method Not Allowed</h1></body></html>";
+    form_response(client_sock, "405 Method Not Allowed", (int)strlen(error_message), "text/html");
+    write(client_sock, error_message, strlen(error_message));
+}
+
+void handle_file_not_found(const char *method, int client_sock)
+{
+    if(strcmp(method, "GET") == 0)
+    {
+        const char *error_message = "<html><body><h1>404 Not Found</h1></body></html>";
+        form_response(client_sock, "404 Not Found", (int)strlen(error_message), "text/html");
+        write(client_sock, error_message, strlen(error_message));
+    }
+    else if(strcmp(method, "HEAD") == 0)
+    {
+        form_response(client_sock, "404 Not Found", 0, "text/html");
+    }
+}
+
+void handle_forbidden(const char *method, int client_sock)
+{
+    if(strcmp(method, "GET") == 0)
+    {
+        const char *error_message = "<html><body><h1>403 Forbidden</h1></body></html>";
+        form_response(client_sock, "403 Forbidden", (int)strlen(error_message), "text/html");
+        write(client_sock, error_message, strlen(error_message));
+    }
+    else if(strcmp(method, "HEAD") == 0)
+    {
+        form_response(client_sock, "403 Forbidden", 0, "text/html");
+    }
+}
+
+static int store_string(DBM *db, const char *key, const char *value)
+{
+    const_datum key_datum   = MAKE_CONST_DATUM(key);
+    const_datum value_datum = MAKE_CONST_DATUM(value);
+
+    return dbm_store(db, *(datum *)&key_datum, *(datum *)&value_datum, DBM_REPLACE);
+}
+
+int add_to_db(const char *key_str, const char *value_str)
+{
+    DBM *db;
+
+    char DATABASE[] = "/home/reece/Documents/COMP4981/COMP4981-assign-4/database.db";    // cppcheck-suppress constVariable
+
+    db = dbm_open(DATABASE, O_RDWR | O_CREAT, 0644);    // NOLINT
     if(db == NULL)
     {
         perror("Opening NDBM database");
         return -1;
     }
 
-    printf("gonnan make:\n");
-
-    key.dptr    = (void *)key_str;
-    key.dsize   = strlen(key_str);
-    value.dptr  = (void *)value_str;
-    value.dsize = value_len;
-
-    if(dbm_store(db, key, value, DBM_INSERT) != 0)
+    if(store_string(db, key_str, value_str) != 0)
     {
-        perror("Error storing data in NDBM");
+        perror("store_string");
         dbm_close(db);
-        return -1;
+        return EXIT_FAILURE;
     }
 
     dbm_close(db);
@@ -169,7 +218,22 @@ int fetch_entry(const char *uri, const char *method, int client_sock)
     if(find_in_db(key, value, sizeof(value)) == 0)
     {
         char response_body[BUFFER_SIZE];
-        snprintf(response_body, sizeof(response_body), "{\"key\": \"%s\", \"value\": \"%s\"}", key, value);
+        char key_truncated[MAX_KEY_LEN + 1];
+        char value_truncated[MAX_VALUE_LEN + 1];
+        int  written;
+
+        strncpy(key_truncated, key, MAX_KEY_LEN);
+        key_truncated[MAX_KEY_LEN] = '\0';
+
+        strncpy(value_truncated, value, MAX_VALUE_LEN);
+        value_truncated[MAX_VALUE_LEN] = '\0';
+
+        written = snprintf(response_body, sizeof(response_body), "{\"key\": \"%s\", \"value\": \"%s\"}", key_truncated, value_truncated);
+
+        if(written < 0 || written >= (int)sizeof(response_body))
+        {
+            fprintf(stderr, "Warning: Response body truncated!\n");
+        }
 
         if(strcmp(method, "GET") == 0)
         {
@@ -183,79 +247,108 @@ int fetch_entry(const char *uri, const char *method, int client_sock)
     }
     else
     {
-        if(strcmp(method, "GET") == 0)
-        {
-            const char *error_message = "<html><body><h1>404 Not Found</h1></body></html>";
-            form_response(client_sock, "404 Not Found", (int)strlen(error_message), "text/html");
-            write(client_sock, error_message, strlen(error_message));
-        }
-        else if(strcmp(method, "HEAD") == 0)
-        {
-            form_response(client_sock, "404 Not Found", 0, "text/html");
-        }
+        handle_file_not_found(method, client_sock);
     }
 
     return 0;
 }
 
-int find_in_db(char *key_str, char *returned_value, size_t max_len)
+static char *retrieve_string(DBM *db, const char *key)
 {
-    DBM   *db;
-    datum  key;
-    datum  value;
-    size_t copy_len;
+    const_datum key_datum;
+    datum       result;
+    char       *retrieved_str;
 
-    db = dbm_open("/Users/reecemelnick/Desktop/COMP4981/assign4/database", O_RDONLY, 0644);    // NOLINT   // Open as read-only
+    key_datum = MAKE_CONST_DATUM(key);
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Waggregate-return"
+    result = dbm_fetch(db, *(datum *)&key_datum);
+#pragma GCC diagnostic pop
+
+    if(result.dptr == NULL)
+    {
+        return NULL;
+    }
+
+    retrieved_str = (char *)malloc(TO_SIZE_T(result.dsize));
+
+    if(!retrieved_str)
+    {
+        return NULL;
+    }
+
+    memcpy(retrieved_str, result.dptr, TO_SIZE_T(result.dsize));
+
+    return retrieved_str;
+}
+
+int find_in_db(const char *key_str, char *returned_value, size_t max_len)
+{
+    DBM  *db;
+    char *retrieved_str;
+
+    char DATABASE[] = "/home/reece/Documents/COMP4981/COMP4981-assign-4/database.db";    // cppcheck-suppress constVariable
+
+    db = dbm_open(DATABASE, O_RDONLY, 0644);    // NOLINT   // Open as read-only
     if(db == NULL)
     {
         perror("Opening NDBM database");
         return -1;
     }
 
-    key.dptr  = (void *)key_str;
-    key.dsize = strlen(key_str);
-
-    value = dbm_fetch(db, key);
-    if(value.dptr == NULL)
+    retrieved_str = retrieve_string(db, key_str);
+    if(retrieved_str == NULL)
     {
         dbm_close(db);
         return -1;
     }
 
-    // either actual size of max size
-    copy_len = (value.dsize < max_len - 1) ? value.dsize : max_len - 1;
-    memcpy(returned_value, value.dptr, copy_len);
-    returned_value[copy_len] = '\0';
+    strncpy(returned_value, retrieved_str, max_len - 1);
+    returned_value[max_len - 1] = '\0';
+
+    free(retrieved_str);
 
     dbm_close(db);
     return 0;
 }
 
-void read_all_entries(const char *db_file)
+void read_all_entries(void)
 {
     DBM  *db;
     datum key;
 
-    db = dbm_open(db_file, O_RDONLY, 0);
+    char DATABASE[] = "/home/reece/Documents/COMP4981/COMP4981-assign-4/database.db";    // cppcheck-suppress constVariable
+
+    db = dbm_open(DATABASE, O_RDONLY, 0);
     if(db == NULL)
     {
         perror("Error opening database");
         return;
     }
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Waggregate-return"
     key = dbm_firstkey(db);
+#pragma GCC diagnostic pop
     while(key.dptr != NULL)
     {
         datum value;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Waggregate-return"
         value = dbm_fetch(db, key);
+#pragma GCC diagnostic pop
 
         printf("Key: ");
-        fwrite(key.dptr, 1, key.dsize, stdout);
+        fwrite(key.dptr, 1, (size_t)key.dsize, stdout);
         printf(", Value: ");
-        fwrite(value.dptr, 1, value.dsize, stdout);
+        fwrite(value.dptr, 1, (size_t)value.dsize, stdout);
         printf("\n");
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Waggregate-return"
         key = dbm_nextkey(db);
+#pragma GCC diagnostic pop
     }
 
     dbm_close(db);
@@ -265,7 +358,7 @@ int handle_post_request(const char *uri, int client_sock, char *request_body)
 {
     char        response_body[BUFFER_SIZE];
     char        content_length_str[32];    // NOLINT
-    char        key_str[32];               // NOLINT
+    char        key_str[MAX_KEY_LEN];               // NOLINT
     long        content_length = 0;
     char       *body_start;
     size_t      body_length;
@@ -278,14 +371,12 @@ int handle_post_request(const char *uri, int client_sock, char *request_body)
         content_length = strtol(content_length_header + 15, &endptr, 10);    // NOLINT
         if(*endptr != '\0' && *endptr != '\r' && *endptr != '\n')
         {
-            fprintf(stderr, "Invalid Content-Length header format\n");
             form_response(client_sock, "400 Bad Request", 0, "text/plain");
             return 0;
         }
     }
     else
     {
-        printf("null\n");
         form_response(client_sock, "400 Bad Request", 0, "text/plain");
         return 0;
     }
@@ -303,8 +394,6 @@ int handle_post_request(const char *uri, int client_sock, char *request_body)
     }
     else
     {
-        printf("body\n");
-
         form_response(client_sock, "400 Bad Request", 0, "text/plain");
         return 0;
     }
@@ -312,14 +401,13 @@ int handle_post_request(const char *uri, int client_sock, char *request_body)
     body_length = strlen(body_start);
     if(body_length != (size_t)content_length)
     {
-        fprintf(stderr, "mismatch: expected %ld, got %zu\n", content_length, body_length);
         form_response(client_sock, "400 Bad Request", 0, "text/plain");
         return 0;
     }
 
     snprintf(key_str, sizeof(key_str), "%ld", time(NULL));    // Use the current time as the key
 
-    if(add_to_db(key_str, body_start, body_length) != 0)
+    if(add_to_db(key_str, body_start) != 0)
     {
         form_response(client_sock, "500 Internal Server Error", 0, "text/plain");
         return -1;
@@ -331,7 +419,7 @@ int handle_post_request(const char *uri, int client_sock, char *request_body)
     form_response(client_sock, "200 OK", (int)strlen(response_body), "application/json");
     write(client_sock, response_body, strlen(response_body));
 
-    read_all_entries("/Users/reecemelnick/Desktop/COMP4981/assign4/database");
+    read_all_entries();
 
     return 0;
 }
@@ -459,7 +547,7 @@ int serve_file(const char *uri, const char *method, int client_sock)
     char filepath[BUFFER_SIZE];
     int  retval;
 
-    snprintf(filepath, sizeof(filepath), "/Users/reecemelnick/Desktop/COMP4981/assign4/public/%s", uri);
+    snprintf(filepath, sizeof(filepath), "//home/reece/Documents/COMP4981/COMP4981-assign-4/public/%s", uri);
 
     retval = check_file_status(filepath);
     if(retval != OK_STATUS)
