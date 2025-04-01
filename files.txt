@@ -1,1 +1,1 @@
-main src/main.c src/display.c include/display.h src/network.c include/network.h src/sharedlib.c include/sharedlib.h gdbm_compat
+main src/main.c src/network.c include/network.h src/sharedlib.c include/sharedlib.h gdbm_compat

@@ -1,4 +1,3 @@
-#include "../include/display.h"
 #include "../include/network.h"
 #include <arpa/inet.h>
 #include <dlfcn.h>
