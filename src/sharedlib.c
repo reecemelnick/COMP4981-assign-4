@@ -26,9 +26,7 @@ typedef struct
 } const_datum;
 
 #define MAKE_CONST_DATUM(str) ((const_datum){(str), (datum_size)strlen(str) + 1})
-
 #define TO_SIZE_T(x) ((size_t)(x))
-
 static char *retrieve_string(DBM *db, const char *key);
 static int   store_string(DBM *db, const char *key, const char *value);
 
@@ -36,10 +34,14 @@ static int   store_string(DBM *db, const char *key, const char *value);
 #define TIME_BUFFER 64
 #define MAX_KEY_LEN 1000
 #define MAX_VALUE_LEN 3000
-
+#define CONTENT_LEN_OFFSET 15
+#define BLANK_LINE_OFFSET 4
+#define BASE 10
 #define OK_STATUS 200
 #define FILE_NOT_FOUND 404
 #define PERMISSION_DENIED 403
+#define KEY_OFFSET 13
+#define PERMISSIONS 0644
 
 void my_function(void)
 {
@@ -114,66 +116,112 @@ int worker_handle_so(int client_sock)
     return 0;
 }
 
-void handle_check_format_error(const char *method, int client_sock)
+int handle_post_request(const char *uri, int client_sock, char *request_body)
 {
-    if(strcmp(method, "GET") == 0)
+    char        response_body[BUFFER_SIZE];
+    char        key_str[MAX_KEY_LEN];
+    long        content_length = 0;
+    char       *body_start;
+    size_t      body_length;
+    const char *content_length_header;
+    char       *endptr;
+
+    // get everything after Content-Length field
+    content_length_header = strstr(request_body, "Content-Length:");
+
+    // convert string content length to long
+    content_length = strtol(content_length_header + CONTENT_LEN_OFFSET, &endptr, BASE);
+    // ensure endptr is pointing at non number after content length
+    if(*endptr != '\0' && *endptr != '\r' && *endptr != '\n')
     {
-        const char *error_message = "<html><body><h1>400 Bad Request</h1></body></html>";
-        form_response(client_sock, "400 Bad Request", (int)strlen(error_message), "text/html");
-        write(client_sock, error_message, strlen(error_message));
+        form_response(client_sock, "400 Bad Request", 0, "text/plain");
+        return 0;
     }
-    else if(strcmp(method, "HEAD") == 0)
+
+    // get endpoint is correct, currently only have 1 POST endpoint
+    if(strcmp(uri, "/dataPOST") != 0)
     {
-        form_response(client_sock, "400 Bad Request", 0, "text/html");
+        form_response(client_sock, "404 Not Found", 0, "text/plain");
+        return 0;
     }
+
+    // search for blank line is request to find the body
+    body_start = strstr(request_body, "\r\n\r\n");
+    if(body_start)
+    {
+        body_start += BLANK_LINE_OFFSET;    // skip blank line
+    }
+    else
+    {
+        form_response(client_sock, "400 Bad Request", 0, "text/plain");
+        return 0;
+    }
+
+    // esnure counted body lengh is the same as the expected content length given in request
+    body_length = strlen(body_start);
+    if(body_length != (size_t)content_length)
+    {
+        form_response(client_sock, "400 Bad Request", 0, "text/plain");
+        return 0;
+    }
+
+    // Use the current time as the key
+    snprintf(key_str, sizeof(key_str), "%ld", time(NULL));
+
+    if(add_to_db(key_str, body_start) != 0)
+    {
+        form_response(client_sock, "500 Internal Server Error", 0, "text/plain");
+        return -1;
+    }
+
+    snprintf(response_body, sizeof(response_body), "{\"message\": \"Data stored successfully. Thank you\"}");
+
+    form_response(client_sock, "200 OK", (int)strlen(response_body), "application/json");
+    write(client_sock, response_body, strlen(response_body));
+
+    // printing for testing purposes
+    read_all_entries();
+
+    return 0;
 }
 
-void handle_file_serve_error(const char *method, int retval, int client_sock)
+void form_response(int newsockfd, const char *status, int content_length, const char *content_type)
 {
-    if(retval == FILE_NOT_FOUND)
-    {
-        handle_file_not_found(method, client_sock);
-    }
+    // const char *time_buffer;            // buffer to store readable time
+    struct tm tm_result;              // time structure
+    char      header[BUFFER_SIZE];    // buffer to hold contents of response
+    char      timestamp[TIME_BUFFER];
 
-    if(retval == PERMISSION_DENIED)
-    {
-        handle_forbidden(method, client_sock);
-    }
+    get_http_date(&tm_result);            // get current time
+    format_time(tm_result, timestamp);    // format time to human readable string
+
+    // format response header for status 200 OK
+    snprintf(header,
+             sizeof(header),
+             "HTTP/1.1 %s\r\n"    // Update to HTTP/1.1
+             "Server: HTTPServer/1.0\r\n"
+             "Date: %s\r\n"
+             "Connection: close\r\n"
+             "Content-Length: %d\r\n"
+             "Content-Type: %s\r\n\r\n",
+             status,
+             timestamp,
+             content_length,
+             content_type);
+
+    printf("%s\n", header);
+    write(newsockfd, header, strlen(header));    // send response to client
+    fflush(stdout);
 }
 
-void handle_verify_method_error(int client_sock)
+int verify_method(const char *method)
 {
-    const char *error_message = "<html><body><h1>405 Method Not Allowed</h1></body></html>";
-    form_response(client_sock, "405 Method Not Allowed", (int)strlen(error_message), "text/html");
-    write(client_sock, error_message, strlen(error_message));
-}
+    if(strcmp(method, "GET") != 0 && strcmp(method, "HEAD") != 0 && strcmp(method, "POST") != 0)
+    {
+        return -1;
+    }
 
-void handle_file_not_found(const char *method, int client_sock)
-{
-    if(strcmp(method, "GET") == 0)
-    {
-        const char *error_message = "<html><body><h1>404 Not Found</h1></body></html>";
-        form_response(client_sock, "404 Not Found", (int)strlen(error_message), "text/html");
-        write(client_sock, error_message, strlen(error_message));
-    }
-    else if(strcmp(method, "HEAD") == 0)
-    {
-        form_response(client_sock, "404 Not Found", 0, "text/html");
-    }
-}
-
-void handle_forbidden(const char *method, int client_sock)
-{
-    if(strcmp(method, "GET") == 0)
-    {
-        const char *error_message = "<html><body><h1>403 Forbidden</h1></body></html>";
-        form_response(client_sock, "403 Forbidden", (int)strlen(error_message), "text/html");
-        write(client_sock, error_message, strlen(error_message));
-    }
-    else if(strcmp(method, "HEAD") == 0)
-    {
-        form_response(client_sock, "403 Forbidden", 0, "text/html");
-    }
+    return 0;
 }
 
 static int store_string(DBM *db, const char *key, const char *value)
@@ -188,9 +236,9 @@ int add_to_db(const char *key_str, const char *value_str)
 {
     DBM *db;
 
-    char DATABASE[] = "/home/reece/Documents/COMP4981/COMP4981-assign-4/database.db";    // cppcheck-suppress constVariable
+    char DATABASE[] = "/Users/reecemelnick/Desktop/COMP4981/assign4/database.db";    // cppcheck-suppress constVariable
 
-    db = dbm_open(DATABASE, O_RDWR | O_CREAT, 0644);    // NOLINT
+    db = dbm_open(DATABASE, O_RDWR | O_CREAT, PERMISSIONS);
     if(db == NULL)
     {
         perror("Opening NDBM database");
@@ -210,17 +258,17 @@ int add_to_db(const char *key_str, const char *value_str)
 
 int fetch_entry(const char *uri, const char *method, int client_sock)
 {
-    char key[64];    // NOLINT
+    char key[MAX_KEY_LEN];
     char value[BUFFER_SIZE];
-    strncpy(key, uri + 13, sizeof(key) - 1);    // NOLINT
+    strncpy(key, uri + KEY_OFFSET, sizeof(key) - 1);
     key[sizeof(key) - 1] = '\0';
 
     if(find_in_db(key, value, sizeof(value)) == 0)
     {
         char response_body[BUFFER_SIZE];
+        // use max length to prevent buffer overflow. Silences warning on linux
         char key_truncated[MAX_KEY_LEN + 1];
         char value_truncated[MAX_VALUE_LEN + 1];
-        int  written;
 
         strncpy(key_truncated, key, MAX_KEY_LEN);
         key_truncated[MAX_KEY_LEN] = '\0';
@@ -228,12 +276,7 @@ int fetch_entry(const char *uri, const char *method, int client_sock)
         strncpy(value_truncated, value, MAX_VALUE_LEN);
         value_truncated[MAX_VALUE_LEN] = '\0';
 
-        written = snprintf(response_body, sizeof(response_body), "{\"key\": \"%s\", \"value\": \"%s\"}", key_truncated, value_truncated);
-
-        if(written < 0 || written >= (int)sizeof(response_body))
-        {
-            fprintf(stderr, "Warning: Response body truncated!\n");
-        }
+        snprintf(response_body, sizeof(response_body), "{\"key\": \"%s\", \"value\": \"%s\"}", key_truncated, value_truncated);
 
         if(strcmp(method, "GET") == 0)
         {
@@ -288,9 +331,9 @@ int find_in_db(const char *key_str, char *returned_value, size_t max_len)
     DBM  *db;
     char *retrieved_str;
 
-    char DATABASE[] = "/home/reece/Documents/COMP4981/COMP4981-assign-4/database.db";    // cppcheck-suppress constVariable
+    char DATABASE[] = "/Users/reecemelnick/Desktop/COMP4981/assign4/database.db";    // cppcheck-suppress constVariable
 
-    db = dbm_open(DATABASE, O_RDONLY, 0644);    // NOLINT   // Open as read-only
+    db = dbm_open(DATABASE, O_RDONLY, PERMISSIONS);    // Open as read-only
     if(db == NULL)
     {
         perror("Opening NDBM database");
@@ -318,7 +361,7 @@ void read_all_entries(void)
     DBM  *db;
     datum key;
 
-    char DATABASE[] = "/home/reece/Documents/COMP4981/COMP4981-assign-4/database.db";    // cppcheck-suppress constVariable
+    char DATABASE[] = "/Users/reecemelnick/Desktop/COMP4981/assign4/database.db";    // cppcheck-suppress constVariable
 
     db = dbm_open(DATABASE, O_RDONLY, 0);
     if(db == NULL)
@@ -340,9 +383,9 @@ void read_all_entries(void)
 #pragma GCC diagnostic pop
 
         printf("Key: ");
-        fwrite(key.dptr, 1, (size_t)key.dsize, stdout);
+        fwrite(key.dptr, 1, key.dsize, stdout);
         printf(", Value: ");
-        fwrite(value.dptr, 1, (size_t)value.dsize, stdout);
+        fwrite(value.dptr, 1, value.dsize, stdout);
         printf("\n");
 
 #pragma GCC diagnostic push
@@ -352,116 +395,6 @@ void read_all_entries(void)
     }
 
     dbm_close(db);
-}
-
-int handle_post_request(const char *uri, int client_sock, char *request_body)
-{
-    char        response_body[BUFFER_SIZE];
-    char        content_length_str[32];    // NOLINT
-    char        key_str[MAX_KEY_LEN];               // NOLINT
-    long        content_length = 0;
-    char       *body_start;
-    size_t      body_length;
-    const char *content_length_header;
-
-    content_length_header = strstr(request_body, "Content-Length:");
-    if(content_length_header)
-    {
-        char *endptr;
-        content_length = strtol(content_length_header + 15, &endptr, 10);    // NOLINT
-        if(*endptr != '\0' && *endptr != '\r' && *endptr != '\n')
-        {
-            form_response(client_sock, "400 Bad Request", 0, "text/plain");
-            return 0;
-        }
-    }
-    else
-    {
-        form_response(client_sock, "400 Bad Request", 0, "text/plain");
-        return 0;
-    }
-
-    if(strcmp(uri, "/dataPOST") != 0)
-    {
-        form_response(client_sock, "404 Not Found", 0, "text/plain");
-        return 0;
-    }
-
-    body_start = strstr(request_body, "\r\n\r\n");
-    if(body_start)
-    {
-        body_start += 4;    // NOLINT
-    }
-    else
-    {
-        form_response(client_sock, "400 Bad Request", 0, "text/plain");
-        return 0;
-    }
-
-    body_length = strlen(body_start);
-    if(body_length != (size_t)content_length)
-    {
-        form_response(client_sock, "400 Bad Request", 0, "text/plain");
-        return 0;
-    }
-
-    snprintf(key_str, sizeof(key_str), "%ld", time(NULL));    // Use the current time as the key
-
-    if(add_to_db(key_str, body_start) != 0)
-    {
-        form_response(client_sock, "500 Internal Server Error", 0, "text/plain");
-        return -1;
-    }
-
-    snprintf(response_body, sizeof(response_body), "{\"message\": \"Data received successfully\"}");
-    snprintf(content_length_str, sizeof(content_length_str), "%d", (int)(strlen(response_body)));
-
-    form_response(client_sock, "200 OK", (int)strlen(response_body), "application/json");
-    write(client_sock, response_body, strlen(response_body));
-
-    read_all_entries();
-
-    return 0;
-}
-
-void form_response(int newsockfd, const char *status, int content_length, const char *content_type)
-{
-    // const char *time_buffer;            // buffer to store readable time
-    struct tm tm_result;              // time structure
-    char      header[BUFFER_SIZE];    // buffer to hold contents of response
-    char      timestamp[TIME_BUFFER];
-
-    get_http_date(&tm_result);    // get current time
-
-    format_time(tm_result, timestamp);    // format time to human readable string
-
-    // format response header for status 200 OK
-    snprintf(header,
-             sizeof(header),
-             "HTTP/1.1 %s\r\n"    // Update to HTTP/1.1
-             "Server: HTTPServer/1.0\r\n"
-             "Date: %s\r\n"
-             "Connection: close\r\n"
-             "Content-Length: %d\r\n"
-             "Content-Type: %s\r\n\r\n",
-             status,
-             timestamp,
-             content_length,
-             content_type);
-
-    printf("%s\n", header);
-    write(newsockfd, header, strlen(header));    // send response to client
-    fflush(stdout);
-}
-
-int verify_method(const char *method)
-{
-    if(strcmp(method, "GET") != 0 && strcmp(method, "HEAD") != 0 && strcmp(method, "POST") != 0)
-    {
-        return -1;
-    }
-
-    return 0;
 }
 
 void get_http_date(struct tm *result)
@@ -537,9 +470,69 @@ int check_http_format(const char *version, const char *uri)
         return -1;
     }
 
-    printf("Format is good\n");
-
     return 0;
+}
+
+void handle_check_format_error(const char *method, int client_sock)
+{
+    if(strcmp(method, "GET") == 0)
+    {
+        const char *error_message = "<html><body><h1>400 Bad Request</h1></body></html>";
+        form_response(client_sock, "400 Bad Request", (int)strlen(error_message), "text/html");
+        write(client_sock, error_message, strlen(error_message));
+    }
+    else if(strcmp(method, "HEAD") == 0)
+    {
+        form_response(client_sock, "400 Bad Request", 0, "text/html");
+    }
+}
+
+void handle_file_serve_error(const char *method, int retval, int client_sock)
+{
+    if(retval == FILE_NOT_FOUND)
+    {
+        handle_file_not_found(method, client_sock);
+    }
+
+    if(retval == PERMISSION_DENIED)
+    {
+        handle_forbidden(method, client_sock);
+    }
+}
+
+void handle_verify_method_error(int client_sock)
+{
+    const char *error_message = "<html><body><h1>405 Method Not Allowed</h1></body></html>";
+    form_response(client_sock, "405 Method Not Allowed", (int)strlen(error_message), "text/html");
+    write(client_sock, error_message, strlen(error_message));
+}
+
+void handle_file_not_found(const char *method, int client_sock)
+{
+    if(strcmp(method, "GET") == 0)
+    {
+        const char *error_message = "<html><body><h1>404 Not Found</h1></body></html>";
+        form_response(client_sock, "404 Not Found", (int)strlen(error_message), "text/html");
+        write(client_sock, error_message, strlen(error_message));
+    }
+    else if(strcmp(method, "HEAD") == 0)
+    {
+        form_response(client_sock, "404 Not Found", 0, "text/html");
+    }
+}
+
+void handle_forbidden(const char *method, int client_sock)
+{
+    if(strcmp(method, "GET") == 0)
+    {
+        const char *error_message = "<html><body><h1>403 Forbidden</h1></body></html>";
+        form_response(client_sock, "403 Forbidden", (int)strlen(error_message), "text/html");
+        write(client_sock, error_message, strlen(error_message));
+    }
+    else if(strcmp(method, "HEAD") == 0)
+    {
+        form_response(client_sock, "403 Forbidden", 0, "text/html");
+    }
 }
 
 int serve_file(const char *uri, const char *method, int client_sock)
@@ -547,7 +540,7 @@ int serve_file(const char *uri, const char *method, int client_sock)
     char filepath[BUFFER_SIZE];
     int  retval;
 
-    snprintf(filepath, sizeof(filepath), "//home/reece/Documents/COMP4981/COMP4981-assign-4/public/%s", uri);
+    snprintf(filepath, sizeof(filepath), "/Users/reecemelnick/Desktop/COMP4981/assign4/public/%s", uri);
 
     retval = check_file_status(filepath);
     if(retval != OK_STATUS)

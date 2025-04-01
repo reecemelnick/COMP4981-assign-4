@@ -1,4 +1,3 @@
-// #include "../include/database.h"
 #include "../include/display.h"
 #include "../include/network.h"
 #include <arpa/inet.h>
@@ -43,13 +42,14 @@ int main(void)
     }
 
     printf("exiting program...\n");
-    sleep(1);    // NOLINT
+    sleep(1);
 
     return EXIT_SUCCESS;
 }
 
 int (*load_lib(void **handle, const char *lib_path))(int)
 {
+    // avoiding direct casting
     union
     {
         void *ptr;
@@ -67,7 +67,6 @@ int (*load_lib(void **handle, const char *lib_path))(int)
 
     cast_helper.ptr  = dlsym(*handle, "worker_handle_so");
     worker_handle_so = cast_helper.func;
-    // worker_handle_so = (int (*)(int))dlsym(*handle, "worker_handle_so");
 
     if(!worker_handle_so)
     {
@@ -85,14 +84,16 @@ void worker(int domain_socket)
     int (*worker_handle)(int);
     struct stat lib_stat;
     struct stat prev_lib_stat;
-    const char *lib_path = "/home/reece/Documents/COMP4981/COMP4981-assign-4/src/libmylib.so";
+    const char *lib_path = "/Users/reecemelnick/Desktop/COMP4981/assign4/src/libmylib.so";
 
+    // initially set prev_lib_stat so we can compare changes
     if(stat(lib_path, &prev_lib_stat) == -1)
     {
         perror("stat failed");
         return;
     }
 
+    // load shared object entry function
     worker_handle = load_lib(&handle, lib_path);
     if(!worker_handle)
     {
@@ -103,19 +104,21 @@ void worker(int domain_socket)
     {
         int client_fd;
         int original_fd;
-        client_fd = recv_fd(domain_socket, &original_fd);
+        client_fd = recv_fd(domain_socket, &original_fd);    // request was given at this point
         if(client_fd < 0)
         {
             perror("recv fd");
             exit(EXIT_FAILURE);
         }
 
+        // get new stat when request was given
         if(stat(lib_path, &lib_stat) == -1)
         {
             perror("stat failed");
             break;
         }
 
+        // if time of last update was changed, reload the library
         if(lib_stat.st_mtime != prev_lib_stat.st_mtime)
         {
             printf("Library updated. Reloading...\n");
@@ -130,19 +133,19 @@ void worker(int domain_socket)
             prev_lib_stat = lib_stat;
         }
 
+        // on successfully recieved file descriptor
         if(client_fd > 0)
         {
             while(1)
             {
                 int work_done;
                 work_done = worker_handle(client_fd);
-
+                // work was completed by the worker
                 if(work_done == 0)
                 {
-                    printf("DONE: %d\n", getpid());
-                    printf("sending: %d\n", original_fd);    // NOLINT
+                    // write back the fd to be closed
                     write(domain_socket, &original_fd, sizeof(original_fd));
-                    close(client_fd);    // send int of fd to close in parent
+                    close(client_fd);
                 }
                 if(work_done == -1)
                 {
@@ -150,10 +153,9 @@ void worker(int domain_socket)
                 }
             }
         }
-        close(client_fd);    // NOLINT
+        close(client_fd);
     }
     dlclose(handle);
-    printf("Worker exiting...\n");
     exit(EXIT_SUCCESS);
 }
 
@@ -171,6 +173,7 @@ _Noreturn void start_monitor(int domain_socket)
         if(p < 0)
         {
             perror("fork fail");
+            exit(EXIT_FAILURE);
         }
 
         workers[i] = p;
@@ -200,13 +203,12 @@ _Noreturn void start_monitor(int domain_socket)
             if(WIFEXITED(status) || WIFSIGNALED(status))
             {
                 pid_t p;
-                printf("Worker %d exited, restarting worker...\n", workers[i]);
-                sleep(5);    // NOLINT
+                printf("worker %d failed, spawning new...\n", workers[i]);
+                sleep(3);    // NOLINT
                 p = fork();
                 if(p == 0)
                 {
                     worker(domain_socket);
-                    exit(EXIT_SUCCESS);
                 }
                 if(p < 0)
                 {
@@ -215,11 +217,9 @@ _Noreturn void start_monitor(int domain_socket)
                 }
 
                 workers[i] = p;
-                printf("Re-spawned worker with pid: %d\n", p);
+                printf("spawned worker with pid: %d\n", p);
             }
         }
-
-        sleep(1);    // NOLINT
     }
 
     close(domain_socket);
@@ -296,50 +296,35 @@ int parent(int domain_socket)
     return 0;
 }
 
-// create monitor with a shared domain socket
 int socketfork(void)
 {
-    int   fd;
-    int   client_socket;
+    int   sv[2];
     pid_t pid;
 
-    fd = create_domain_socket();
+    if(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == -1)
+    {
+        perror("socketpair");
+        return -1;
+    }
 
     pid = fork();
 
-    // handle parent and child
     if(pid == 0)
     {
-        close(fd);
-        client_socket = connect_to_domain();
-        if(client_socket < 0)
-        {
-            perror("Failed to connect in child");
-            exit(EXIT_FAILURE);
-        }
-        start_monitor(client_socket);
+        close(sv[0]);
+        start_monitor(sv[1]);
     }
     else if(pid > 0)
     {
-        client_socket = accept(fd, NULL, NULL);
-        if(client_socket == -1)
-        {
-            perror("accept");
-            close(fd);
-            exit(EXIT_FAILURE);
-        }
-
-        parent(client_socket);
-        close(client_socket);
+        close(sv[1]);
+        parent(sv[0]);
     }
-
-    if(pid < 0)
+    else
     {
         perror("fork");
         return -1;
     }
 
-    close(fd);
     return 0;
 }
 

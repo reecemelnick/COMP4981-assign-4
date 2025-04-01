@@ -9,76 +9,11 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
 
 #define PORT 8000
-#define SOCKET_PATH "/tmp/domain_socket"
-
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <unistd.h>
-
-int create_domain_socket(void)
-{
-    int                sockfd;
-    struct sockaddr_un addr;
-
-    unlink(SOCKET_PATH);
-
-    sockfd = socket(AF_UNIX, SOCK_STREAM, 0);    // NOLINT
-    if(sockfd < 0)
-    {
-        perror("socket failed");
-        return -1;
-    }
-
-    memset(&addr, 0, sizeof(struct sockaddr_un));
-    addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, SOCKET_PATH, sizeof(addr.sun_path) - 1);
-
-    if(bind(sockfd, (struct sockaddr *)&addr, sizeof(addr)) == -1)
-    {
-        perror("bind failed");
-        close(sockfd);
-        return -1;
-    }
-
-    if(listen(sockfd, 5) == -1)    // NOLINT
-    {
-        perror("listen failed");
-        close(sockfd);
-        return -1;
-    }
-
-    return sockfd;
-}
-
-int connect_to_domain(void)
-{
-    struct sockaddr_un addr;
-    int                sockfd = socket(AF_UNIX, SOCK_STREAM, 0);    // NOLINT
-    if(sockfd < 0)
-    {
-        perror("socket failed");
-        exit(EXIT_FAILURE);
-    }
-
-    memset(&addr, 0, sizeof(addr));
-    addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, SOCKET_PATH, sizeof(addr.sun_path) - 1);
-
-    if(connect(sockfd, (struct sockaddr *)&addr, sizeof(addr)) == -1)
-    {
-        perror("connect failed");
-        close(sockfd);
-        exit(EXIT_FAILURE);
-    }
-    return sockfd;
-}
 
 int initialize_socket(void)
 {
@@ -148,7 +83,6 @@ void set_fd_blocking(int fd)
     }
 }
 
-// FIGURE OUT WHAT THIS DOES
 void handle_new_connection(int sockfd, int **client_sockets, nfds_t *max_clients, struct pollfd **fds)
 {
     if((*fds)[0].revents & POLLIN)
