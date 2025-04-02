@@ -31,8 +31,6 @@ typedef struct
 static char *retrieve_string(DBM *db, const char *key);
 static int   store_string(DBM *db, const char *key, const char *value);
 
-static volatile sig_atomic_t id = 0;    // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
-
 #define BUFFER_SIZE 4096
 #define TIME_BUFFER 64
 #define MAX_KEY_LEN 1000
@@ -46,22 +44,12 @@ static volatile sig_atomic_t id = 0;    // NOLINT(cppcoreguidelines-avoid-non-co
 #define KEY_OFFSET 13
 #define PERMISSIONS 0644
 
-// #define DB_SEM "/db_semaphore"
-
-// sem_t* init_semaphore() {
-//     sem_t *sem = sem_open(DB_SEM, O_CREAT, PERMISSIONS, 1);
-//     if (sem == SEM_FAILED) {
-//         perror("sem_open");
-//         exit(EXIT_FAILURE);
-//     }
-// }
-
 void my_function(void)
 {
     printf("Hello from the shared library!\n");
 }
 
-int worker_handle_so(int client_sock)
+int worker_handle_so(int client_sock, sem_t *sem)
 {
     ssize_t valread;
     int     retval;
@@ -102,14 +90,14 @@ int worker_handle_so(int client_sock)
     // handle post request, writing to DB
     if(strcmp(method, "POST") == 0)
     {
-        retval = handle_post_request(uri, client_sock, buffer);
+        retval = handle_post_request(uri, client_sock, buffer, sem);
         return retval;
     }
 
     // GET FROM DATABASE
-    if(strncmp(uri, "/dataGET?key=", 13) == 0)    // NOLINT
+    if(strncmp(uri, "/dataGET?key=", KEY_OFFSET) == 0)    // NOLINT
     {
-        retval = fetch_entry(uri, method, client_sock);
+        retval = fetch_entry(uri, method, client_sock, sem);
         return retval;
     }
 
@@ -129,19 +117,16 @@ int worker_handle_so(int client_sock)
     return 0;
 }
 
-int handle_post_request(const char *uri, int client_sock, char *request_body)
+int handle_post_request(const char *uri, int client_sock, char *request_body, sem_t *sem)
 {
     char        response_body[BUFFER_SIZE];
-    char        key_str[MAX_KEY_LEN];
-    char        *key_strn;
-    char* value_strn;
     long        content_length = 0;
     char       *body_start;
     size_t      body_length;
     const char *content_length_header;
     char       *endptr;
-    char key[256]; // NOLINT
-    char value[256]; // NOLINT
+    char       *key;
+    char       *value;
 
     // get everything after Content-Length field
     content_length_header = strstr(request_body, "Content-Length:");
@@ -182,58 +167,34 @@ int handle_post_request(const char *uri, int client_sock, char *request_body)
         return 0;
     }
 
-    // Find the "key" field in the string
-    key_strn = strstr(body_start, "\"key\":");
-    if (key_strn) {
-        key_strn += 6;  // Skip past "\"key\":"
+    key = parse_key(body_start);
 
-        // Find the opening quote for the key value
-        char *key_start = strchr(key_strn, '\"');
-        if (key_start) {
-            key_start++;  // Move past the opening quote
+    value = parse_value(body_start);
 
-            // Find the closing quote for the key value
-            char *key_end = strchr(key_start, '\"');
-            if (key_end) {
-                // Copy the key string into the buffer
-                size_t key_len = key_end - key_start;
-                strncpy(key, key_start, key_len);
-                key[key_len] = '\0';  // Null terminate the string
-            }
-        }
-    }
-
-    // Find the "value" field in the string
-    value_strn = strstr(body_start, "\"value\":");
-    if (value_strn) {
-        value_strn += 8;  // Skip past "\"value\":"
-
-        // Find the opening quote for the value
-        char *value_start = strchr(value_strn, '\"');
-        if (value_start) {
-            value_start++;  // Move past the opening quote
-
-            // Find the closing quote for the value
-            char *value_end = strchr(value_start, '\"');
-            if (value_end) {
-                // Copy the value string into the buffer
-                size_t value_len = value_end - value_start;
-                strncpy(value, value_start, value_len);
-                value[value_len] = '\0';  // Null terminate the string
-            }
-        }
+    if(!key || !value)
+    {
+        form_response(client_sock, "400 Bad Request", 0, "text/plain");
+        free(key);
+        free(value);
+        return 0;
     }
 
     // Output the extracted key and value
     printf("Extracted key: %s\n", key);
     printf("Extracted value: %s\n", value);
 
+    sem_wait(sem);
 
     if(add_to_db(key, value) != 0)
     {
         form_response(client_sock, "500 Internal Server Error", 0, "text/plain");
+        free(key);
+        free(value);
+        sem_post(sem);
         return -1;
     }
+
+    sem_post(sem);
 
     snprintf(response_body, sizeof(response_body), "{\"message\": \"Data stored successfully. Thank you\"}");
 
@@ -241,9 +202,90 @@ int handle_post_request(const char *uri, int client_sock, char *request_body)
     write(client_sock, response_body, strlen(response_body));
 
     // printing for testing purposes
+    sem_wait(sem);
     read_all_entries();
+    sem_post(sem);
+
+    free(key);
+    free(value);
 
     return 0;
+}
+
+char *parse_value(char *body_start)
+{
+    char *value_strn;
+    char *value = NULL;
+
+    value_strn = strstr(body_start, "\"value\":");
+    if(value_strn)
+    {
+        char *value_start;
+        value_strn += 8;    // NOLINT
+
+        value_start = strchr(value_strn, '\"');
+        if(value_start)
+        {
+            const char *value_end;
+            value_start++;
+
+            value_end = strchr(value_start, '\"');
+            if(value_end)
+            {
+                size_t value_len = (size_t)(value_end - value_start);
+                value            = (char *)malloc(value_len + 1);
+                strncpy(value, value_start, value_len);
+                value[value_len] = '\0';
+            }
+            else
+            {
+                return NULL;
+            }
+        }
+        else
+        {
+            return NULL;
+        }
+    }
+    return value;
+}
+
+char *parse_key(char *body_start)
+{
+    char *key_strn;
+    char *key = NULL;
+
+    key_strn = strstr(body_start, "\"key\":");
+    if(key_strn)
+    {
+        char *key_start;
+        key_strn += 6;    // NOLINT
+
+        key_start = strchr(key_strn, '\"');
+        if(key_start)
+        {
+            const char *key_end;
+            key_start++;
+
+            key_end = strchr(key_start, '\"');
+            if(key_end)
+            {
+                size_t key_len = (size_t)(key_end - key_start);
+                key            = (char *)malloc(key_len + 1);
+                strncpy(key, key_start, key_len);
+                key[key_len] = '\0';
+            }
+            else
+            {
+                return NULL;
+            }
+        }
+        else
+        {
+            return NULL;
+        }
+    }
+    return key;
 }
 
 void form_response(int newsockfd, const char *status, int content_length, const char *content_type)
@@ -297,7 +339,7 @@ int add_to_db(const char *key_str, const char *value_str)
 {
     DBM *db;
 
-    char DATABASE[] = "/Users/reecemelnick/Desktop/COMP4981/assign4/database.db";    // cppcheck-suppress constVariable
+    char DATABASE[] = "/home/reece/Documents/COMP4981/COMP4981-assign-4/database.db";    // cppcheck-suppress constVariable
 
     db = dbm_open(DATABASE, O_RDWR | O_CREAT, PERMISSIONS);
     if(db == NULL)
@@ -317,13 +359,13 @@ int add_to_db(const char *key_str, const char *value_str)
     return 0;
 }
 
-int fetch_entry(const char *uri, const char *method, int client_sock)
+int fetch_entry(const char *uri, const char *method, int client_sock, sem_t *sem)
 {
     char key[MAX_KEY_LEN];
     char value[BUFFER_SIZE];
     strncpy(key, uri + KEY_OFFSET, sizeof(key) - 1);
     key[sizeof(key) - 1] = '\0';
-
+    sem_wait(sem);
     if(find_in_db(key, value, sizeof(value)) == 0)
     {
         char response_body[BUFFER_SIZE];
@@ -353,6 +395,8 @@ int fetch_entry(const char *uri, const char *method, int client_sock)
     {
         handle_file_not_found(method, client_sock);
     }
+
+    sem_post(sem);
 
     return 0;
 }
@@ -392,7 +436,7 @@ int find_in_db(const char *key_str, char *returned_value, size_t max_len)
     DBM  *db;
     char *retrieved_str;
 
-    char DATABASE[] = "/Users/reecemelnick/Desktop/COMP4981/assign4/database.db";    // cppcheck-suppress constVariable
+    char DATABASE[] = "/home/reece/Documents/COMP4981/COMP4981-assign-4/database.db";    // cppcheck-suppress constVariable
 
     db = dbm_open(DATABASE, O_RDONLY, PERMISSIONS);    // Open as read-only
     if(db == NULL)
@@ -422,7 +466,7 @@ void read_all_entries(void)
     DBM  *db;
     datum key;
 
-    char DATABASE[] = "/Users/reecemelnick/Desktop/COMP4981/assign4/database.db";    // cppcheck-suppress constVariable
+    char DATABASE[] = "/home/reece/Documents/COMP4981/COMP4981-assign-4/database.db";    // cppcheck-suppress constVariable
 
     db = dbm_open(DATABASE, O_RDONLY, 0);
     if(db == NULL)
@@ -444,9 +488,9 @@ void read_all_entries(void)
 #pragma GCC diagnostic pop
 
         printf("Key: ");
-        fwrite(key.dptr, 1, key.dsize, stdout);
+        fwrite(key.dptr, 1, (size_t)key.dsize, stdout);
         printf(", Value: ");
-        fwrite(value.dptr, 1, value.dsize, stdout);
+        fwrite(value.dptr, 1, (size_t)value.dsize, stdout);
         printf("\n");
 
 #pragma GCC diagnostic push
@@ -601,7 +645,7 @@ int serve_file(const char *uri, const char *method, int client_sock)
     char filepath[BUFFER_SIZE];
     int  retval;
 
-    snprintf(filepath, sizeof(filepath), "/Users/reecemelnick/Desktop/COMP4981/assign4/public/%s", uri);
+    snprintf(filepath, sizeof(filepath), "/home/reece/Documents/COMP4981/COMP4981-assign-4/public/%s", uri);
 
     retval = check_file_status(filepath);
     if(retval != OK_STATUS)

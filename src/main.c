@@ -2,8 +2,10 @@
 #include <arpa/inet.h>
 #include <dlfcn.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <poll.h>
+#include <semaphore.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,10 +22,10 @@
 int         socketfork(void);
 int         parent(int socket);
 void        start_monitor(int socket);
-void        worker(int socket);
+void        worker(int socket, sem_t *semaphore);
 static void setup_signal_handler(void);
 static void sigint_handler(int signum);
-int (*load_lib(void **handle, const char *lib_path))(int);
+int (*load_lib(void **handle, const char *lib_path))(int, sem_t *);
 static volatile sig_atomic_t exit_flag = 0;    // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
 
 int main(void)
@@ -44,16 +46,16 @@ int main(void)
     return EXIT_SUCCESS;
 }
 
-int (*load_lib(void **handle, const char *lib_path))(int)
+int (*load_lib(void **handle, const char *lib_path))(int, sem_t *)
 {
     // avoiding direct casting
     union
     {
         void *ptr;
-        int (*func)(int);
+        int (*func)(int, sem_t *);
     } cast_helper;
 
-    int (*worker_handle_so)(int) = NULL;
+    int (*worker_handle_so)(int, sem_t *) = NULL;
 
     *handle = dlopen(lib_path, RTLD_LAZY);
     if(*handle == NULL)
@@ -75,13 +77,13 @@ int (*load_lib(void **handle, const char *lib_path))(int)
     return worker_handle_so;
 }
 
-void worker(int domain_socket)
+void worker(int domain_socket, sem_t *semaphore)
 {
     void *handle;
-    int (*worker_handle)(int);
+    int (*worker_handle)(int, sem_t *);
     struct stat lib_stat;
     struct stat prev_lib_stat;
-    const char *lib_path = "/Users/reecemelnick/Desktop/COMP4981/assign4/src/libmylib.so";
+    const char *lib_path = "/home/reece/Documents/COMP4981/COMP4981-assign-4/src/libmylib.so";
 
     // initially set prev_lib_stat so we can compare changes
     if(stat(lib_path, &prev_lib_stat) == -1)
@@ -136,11 +138,12 @@ void worker(int domain_socket)
             while(1)
             {
                 int work_done;
-                work_done = worker_handle(client_fd);
+                work_done = worker_handle(client_fd, semaphore);
                 // work was completed by the worker
                 if(work_done == 0)
                 {
                     // write back the fd to be closed
+                    sleep(5);    // NOLINT
                     write(domain_socket, &original_fd, sizeof(original_fd));
                     close(client_fd);
                 }
@@ -160,12 +163,19 @@ _Noreturn void start_monitor(int domain_socket)
 {
     pid_t workers[N_WORKERS];
 
+    sem_t *semaphore = sem_open("/db_sem", O_CREAT, 0644, 1);    // NOLINT
+    if(semaphore == SEM_FAILED)
+    {
+        perror("sem_open");
+        exit(EXIT_FAILURE);
+    }
+
     for(int i = 0; i < N_WORKERS; ++i)
     {
         int p = fork();
         if(p == 0)
         {
-            worker(domain_socket);
+            worker(domain_socket, semaphore);
         }
         if(p < 0)
         {
@@ -205,7 +215,7 @@ _Noreturn void start_monitor(int domain_socket)
                 p = fork();
                 if(p == 0)
                 {
-                    worker(domain_socket);
+                    worker(domain_socket, semaphore);
                 }
                 if(p < 0)
                 {

@@ -131,12 +131,6 @@ void handle_new_connection(int sockfd, int **client_sockets, nfds_t *max_clients
                 (*fds)[*max_clients].events = POLLIN;
             }
         }
-
-        printf("max clients: %d\n", (int)(*max_clients));
-        for(int i = 0; i < (int)*max_clients; i++)
-        {
-            printf("client fd: %d\n", (*client_sockets)[i]);
-        }
     }
 }
 

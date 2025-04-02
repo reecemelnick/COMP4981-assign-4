@@ -12,6 +12,8 @@
         "types.h": "c",
         "socket.h": "c",
         "string.h": "c",
-        "semaphore.h": "c"
+        "semaphore.h": "c",
+        "type_traits": "c",
+        "utility": "c"
     }
 }
