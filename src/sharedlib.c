@@ -4,6 +4,7 @@
 #include <ndbm.h>
 #include <netinet/in.h>
 #include <poll.h>
+#include <semaphore.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,6 +31,8 @@ typedef struct
 static char *retrieve_string(DBM *db, const char *key);
 static int   store_string(DBM *db, const char *key, const char *value);
 
+static volatile sig_atomic_t id = 0;    // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
+
 #define BUFFER_SIZE 4096
 #define TIME_BUFFER 64
 #define MAX_KEY_LEN 1000
@@ -42,6 +45,16 @@ static int   store_string(DBM *db, const char *key, const char *value);
 #define PERMISSION_DENIED 403
 #define KEY_OFFSET 13
 #define PERMISSIONS 0644
+
+// #define DB_SEM "/db_semaphore"
+
+// sem_t* init_semaphore() {
+//     sem_t *sem = sem_open(DB_SEM, O_CREAT, PERMISSIONS, 1);
+//     if (sem == SEM_FAILED) {
+//         perror("sem_open");
+//         exit(EXIT_FAILURE);
+//     }
+// }
 
 void my_function(void)
 {
@@ -120,11 +133,15 @@ int handle_post_request(const char *uri, int client_sock, char *request_body)
 {
     char        response_body[BUFFER_SIZE];
     char        key_str[MAX_KEY_LEN];
+    char        *key_strn;
+    char* value_strn;
     long        content_length = 0;
     char       *body_start;
     size_t      body_length;
     const char *content_length_header;
     char       *endptr;
+    char key[256]; // NOLINT
+    char value[256]; // NOLINT
 
     // get everything after Content-Length field
     content_length_header = strstr(request_body, "Content-Length:");
@@ -165,10 +182,54 @@ int handle_post_request(const char *uri, int client_sock, char *request_body)
         return 0;
     }
 
-    // Use the current time as the key
-    snprintf(key_str, sizeof(key_str), "%ld", time(NULL));
+    // Find the "key" field in the string
+    key_strn = strstr(body_start, "\"key\":");
+    if (key_strn) {
+        key_strn += 6;  // Skip past "\"key\":"
 
-    if(add_to_db(key_str, body_start) != 0)
+        // Find the opening quote for the key value
+        char *key_start = strchr(key_strn, '\"');
+        if (key_start) {
+            key_start++;  // Move past the opening quote
+
+            // Find the closing quote for the key value
+            char *key_end = strchr(key_start, '\"');
+            if (key_end) {
+                // Copy the key string into the buffer
+                size_t key_len = key_end - key_start;
+                strncpy(key, key_start, key_len);
+                key[key_len] = '\0';  // Null terminate the string
+            }
+        }
+    }
+
+    // Find the "value" field in the string
+    value_strn = strstr(body_start, "\"value\":");
+    if (value_strn) {
+        value_strn += 8;  // Skip past "\"value\":"
+
+        // Find the opening quote for the value
+        char *value_start = strchr(value_strn, '\"');
+        if (value_start) {
+            value_start++;  // Move past the opening quote
+
+            // Find the closing quote for the value
+            char *value_end = strchr(value_start, '\"');
+            if (value_end) {
+                // Copy the value string into the buffer
+                size_t value_len = value_end - value_start;
+                strncpy(value, value_start, value_len);
+                value[value_len] = '\0';  // Null terminate the string
+            }
+        }
+    }
+
+    // Output the extracted key and value
+    printf("Extracted key: %s\n", key);
+    printf("Extracted value: %s\n", value);
+
+
+    if(add_to_db(key, value) != 0)
     {
         form_response(client_sock, "500 Internal Server Error", 0, "text/plain");
         return -1;

@@ -30,8 +30,6 @@ int main(void)
 {
     int status;
 
-    display("---Robust Server---");
-
     setup_signal_handler();
 
     status = socketfork();
