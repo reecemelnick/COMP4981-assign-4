@@ -190,6 +190,7 @@ _Noreturn void start_monitor(int domain_socket)
     // MONITOR WORKER HEALTH
     while(!exit_flag)
     {
+        sleep(1);
         for(int i = 0; i < N_WORKERS; ++i)
         {
             int   status;

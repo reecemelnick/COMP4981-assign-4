@@ -290,7 +290,6 @@ char *parse_key(char *body_start)
 
 void form_response(int newsockfd, const char *status, int content_length, const char *content_type)
 {
-    // const char *time_buffer;            // buffer to store readable time
     struct tm tm_result;              // time structure
     char      header[BUFFER_SIZE];    // buffer to hold contents of response
     char      timestamp[TIME_BUFFER];
@@ -301,7 +300,7 @@ void form_response(int newsockfd, const char *status, int content_length, const 
     // format response header for status 200 OK
     snprintf(header,
              sizeof(header),
-             "HTTP/1.1 %s\r\n"    // Update to HTTP/1.1
+             "HTTP/1.0 %s\r\n" 
              "Server: HTTPServer/1.0\r\n"
              "Date: %s\r\n"
              "Connection: close\r\n"
@@ -362,9 +361,11 @@ int add_to_db(const char *key_str, const char *value_str)
 int fetch_entry(const char *uri, const char *method, int client_sock, sem_t *sem)
 {
     char key[MAX_KEY_LEN];
-    char value[BUFFER_SIZE];
+    char value[MAX_VALUE_LEN];
+
     strncpy(key, uri + KEY_OFFSET, sizeof(key) - 1);
     key[sizeof(key) - 1] = '\0';
+    
     sem_wait(sem);
     if(find_in_db(key, value, sizeof(value)) == 0)
     {

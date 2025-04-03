@@ -77,7 +77,6 @@ void set_fd_blocking(int fd)
         return;
     }
 
-    // Set the O_NONBLOCK flag to 0 (which makes the file descriptor blocking)
     if(fcntl(fd, F_SETFL, flags & ~O_NONBLOCK) == -1)
     {
         perror("fcntl(F_SETFL) failed");
@@ -188,11 +187,11 @@ void handle_client_data(struct pollfd *fds, const int *client_sockets, const nfd
 
 void send_fd(int domain_socket, int fd)
 {
-    struct msghdr   msg = {0};    // holds both regular data and control data for passing file descriptors
-    struct iovec    io;           // holds dummy single byte buffer
+    struct msghdr   msg = {0};  
+    struct iovec    io;       
     int             data = fd;
     struct cmsghdr *cmsg;
-    char            control[CMSG_SPACE(sizeof(int))];    // store file descriptor into control structure
+    char            control[CMSG_SPACE(sizeof(int))]; 
 
     io.iov_base        = &data;
     io.iov_len         = sizeof(data);
