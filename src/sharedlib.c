@@ -300,7 +300,7 @@ void form_response(int newsockfd, const char *status, int content_length, const 
     // format response header for status 200 OK
     snprintf(header,
              sizeof(header),
-             "HTTP/1.0 %s\r\n" 
+             "HTTP/1.0 %s\r\n"
              "Server: HTTPServer/1.0\r\n"
              "Date: %s\r\n"
              "Connection: close\r\n"
@@ -338,7 +338,7 @@ int add_to_db(const char *key_str, const char *value_str)
 {
     DBM *db;
 
-    char DATABASE[] = "/home/reece/Documents/COMP4981/COMP4981-assign-4/database.db";    // cppcheck-suppress constVariable
+    char DATABASE[] = "/Users/reecemelnick/Desktop/COMP4981/assign4/database.db";    // cppcheck-suppress constVariable
 
     db = dbm_open(DATABASE, O_RDWR | O_CREAT, PERMISSIONS);
     if(db == NULL)
@@ -365,7 +365,7 @@ int fetch_entry(const char *uri, const char *method, int client_sock, sem_t *sem
 
     strncpy(key, uri + KEY_OFFSET, sizeof(key) - 1);
     key[sizeof(key) - 1] = '\0';
-    
+
     sem_wait(sem);
     if(find_in_db(key, value, sizeof(value)) == 0)
     {
@@ -389,7 +389,7 @@ int fetch_entry(const char *uri, const char *method, int client_sock, sem_t *sem
         }
         else if(strcmp(method, "HEAD") == 0)
         {
-            form_response(client_sock, "200 OK", 0, "application/json");
+            form_response(client_sock, "200 OK", (int)strlen(response_body), "application/json");
         }
     }
     else
@@ -437,7 +437,7 @@ int find_in_db(const char *key_str, char *returned_value, size_t max_len)
     DBM  *db;
     char *retrieved_str;
 
-    char DATABASE[] = "/home/reece/Documents/COMP4981/COMP4981-assign-4/database.db";    // cppcheck-suppress constVariable
+    char DATABASE[] = "/Users/reecemelnick/Desktop/COMP4981/assign4/database.db";    // cppcheck-suppress constVariable
 
     db = dbm_open(DATABASE, O_RDONLY, PERMISSIONS);    // Open as read-only
     if(db == NULL)
@@ -467,7 +467,7 @@ void read_all_entries(void)
     DBM  *db;
     datum key;
 
-    char DATABASE[] = "/home/reece/Documents/COMP4981/COMP4981-assign-4/database.db";    // cppcheck-suppress constVariable
+    char DATABASE[] = "/Users/reecemelnick/Desktop/COMP4981/assign4/database.db";    // cppcheck-suppress constVariable
 
     db = dbm_open(DATABASE, O_RDONLY, 0);
     if(db == NULL)
@@ -581,15 +581,16 @@ int check_http_format(const char *version, const char *uri)
 
 void handle_check_format_error(const char *method, int client_sock)
 {
+    const char *error_message = "<html><body><h1>400 Bad Request</h1></body></html>";
+
     if(strcmp(method, "GET") == 0)
     {
-        const char *error_message = "<html><body><h1>400 Bad Request</h1></body></html>";
         form_response(client_sock, "400 Bad Request", (int)strlen(error_message), "text/html");
         write(client_sock, error_message, strlen(error_message));
     }
     else if(strcmp(method, "HEAD") == 0)
     {
-        form_response(client_sock, "400 Bad Request", 0, "text/html");
+        form_response(client_sock, "400 Bad Request", (int)strlen(error_message), "text/html");
     }
 }
 
@@ -615,29 +616,31 @@ void handle_verify_method_error(int client_sock)
 
 void handle_file_not_found(const char *method, int client_sock)
 {
+    const char *error_message = "<html><body><h1>404 Not Found</h1></body></html>";
+
     if(strcmp(method, "GET") == 0)
     {
-        const char *error_message = "<html><body><h1>404 Not Found</h1></body></html>";
         form_response(client_sock, "404 Not Found", (int)strlen(error_message), "text/html");
         write(client_sock, error_message, strlen(error_message));
     }
     else if(strcmp(method, "HEAD") == 0)
     {
-        form_response(client_sock, "404 Not Found", 0, "text/html");
+        form_response(client_sock, "404 Not Found", (int)strlen(error_message), "text/html");
     }
 }
 
 void handle_forbidden(const char *method, int client_sock)
 {
+    const char *error_message = "<html><body><h1>403 Forbidden</h1></body></html>";
+
     if(strcmp(method, "GET") == 0)
     {
-        const char *error_message = "<html><body><h1>403 Forbidden</h1></body></html>";
         form_response(client_sock, "403 Forbidden", (int)strlen(error_message), "text/html");
         write(client_sock, error_message, strlen(error_message));
     }
     else if(strcmp(method, "HEAD") == 0)
     {
-        form_response(client_sock, "403 Forbidden", 0, "text/html");
+        form_response(client_sock, "403 Forbidden", (int)strlen(error_message), "text/html");
     }
 }
 
@@ -646,7 +649,7 @@ int serve_file(const char *uri, const char *method, int client_sock)
     char filepath[BUFFER_SIZE];
     int  retval;
 
-    snprintf(filepath, sizeof(filepath), "/home/reece/Documents/COMP4981/COMP4981-assign-4/public/%s", uri);
+    snprintf(filepath, sizeof(filepath), "/Users/reecemelnick/Desktop/COMP4981/assign4/public/%s", uri);
 
     retval = check_file_status(filepath);
     if(retval != OK_STATUS)
@@ -730,7 +733,7 @@ int read_file(const char *filepath, const char *method, int client_socket)
     }
     else if(strcmp(method, "HEAD") == 0)
     {
-        form_response(client_socket, "200 OK", 0, get_content_type(filepath));
+        form_response(client_socket, "200 OK", get_file_size(filepath), get_content_type(filepath));
         return 0;
     }
 

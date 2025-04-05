@@ -187,11 +187,11 @@ void handle_client_data(struct pollfd *fds, const int *client_sockets, const nfd
 
 void send_fd(int domain_socket, int fd)
 {
-    struct msghdr   msg = {0};  
-    struct iovec    io;       
+    struct msghdr   msg = {0};
+    struct iovec    io;
     int             data = fd;
     struct cmsghdr *cmsg;
-    char            control[CMSG_SPACE(sizeof(int))]; 
+    char            control[CMSG_SPACE(sizeof(int))];
 
     io.iov_base        = &data;
     io.iov_len         = sizeof(data);

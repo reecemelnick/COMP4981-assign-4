@@ -17,24 +17,36 @@
 #include <time.h>
 #include <unistd.h>
 
-#define N_WORKERS 3
+#define MIN_WORKERS 1
+#define MAX_WORKERS 5
+#define BASE 10
 
-int         socketfork(void);
+int         socketfork(int workers_num);
 int         parent(int socket);
-void        start_monitor(int socket);
+void        start_monitor(int socket, int workers_num);
 void        worker(int socket, sem_t *semaphore);
 static void setup_signal_handler(void);
 static void sigint_handler(int signum);
 int (*load_lib(void **handle, const char *lib_path))(int, sem_t *);
+void handle_arguments(int argc, char *argv[], int *workers_num);
+
 static volatile sig_atomic_t exit_flag = 0;    // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
 
-int main(void)
+int main(int argc, char *argv[])
 {
     int status;
+    int workers_num = 0;
 
     setup_signal_handler();
 
-    status = socketfork();
+    handle_arguments(argc, argv, &workers_num);
+    if(!workers_num)
+    {
+        printf("Select number of workers -w <num>. Must be an integer between %d and %d.\n", MIN_WORKERS, MAX_WORKERS);
+        exit(EXIT_FAILURE);
+    }
+
+    status = socketfork(workers_num);
     if(status == -1)
     {
         perror("starting monitor");
@@ -83,7 +95,7 @@ void worker(int domain_socket, sem_t *semaphore)
     int (*worker_handle)(int, sem_t *);
     struct stat lib_stat;
     struct stat prev_lib_stat;
-    const char *lib_path = "/home/reece/Documents/COMP4981/COMP4981-assign-4/src/libmylib.so";
+    const char *lib_path = "/Users/reecemelnick/Desktop/COMP4981/assign4/src/libmylib.so";
 
     // initially set prev_lib_stat so we can compare changes
     if(stat(lib_path, &prev_lib_stat) == -1)
@@ -143,7 +155,6 @@ void worker(int domain_socket, sem_t *semaphore)
                 if(work_done == 0)
                 {
                     // write back the fd to be closed
-                    sleep(5);    // NOLINT
                     write(domain_socket, &original_fd, sizeof(original_fd));
                     close(client_fd);
                 }
@@ -159,18 +170,32 @@ void worker(int domain_socket, sem_t *semaphore)
     exit(EXIT_SUCCESS);
 }
 
-_Noreturn void start_monitor(int domain_socket)
+_Noreturn void start_monitor(int domain_socket, int workers_num)
 {
-    pid_t workers[N_WORKERS];
+    pid_t *workers;
+    sem_t *semaphore;
 
-    sem_t *semaphore = sem_open("/db_sem", O_CREAT, 0644, 1);    // NOLINT
+    if(workers_num <= 0)
+    {
+        fprintf(stderr, "workers_num must be greater than 0\n");
+        exit(EXIT_FAILURE);
+    }
+
+    workers = malloc(sizeof(pid_t) * (size_t)workers_num);
+    if(workers == NULL)
+    {
+        perror("malloc failed");
+        exit(EXIT_FAILURE);
+    }
+
+    semaphore = sem_open("/db_sem", O_CREAT, 0644, 1);    // NOLINT
     if(semaphore == SEM_FAILED)
     {
         perror("sem_open");
         exit(EXIT_FAILURE);
     }
 
-    for(int i = 0; i < N_WORKERS; ++i)
+    for(int i = 0; i < workers_num; ++i)
     {
         int p = fork();
         if(p == 0)
@@ -191,7 +216,7 @@ _Noreturn void start_monitor(int domain_socket)
     while(!exit_flag)
     {
         sleep(1);
-        for(int i = 0; i < N_WORKERS; ++i)
+        for(int i = 0; i < workers_num; ++i)
         {
             int   status;
             pid_t result = waitpid(workers[i], &status, WNOHANG);
@@ -231,6 +256,7 @@ _Noreturn void start_monitor(int domain_socket)
     }
 
     close(domain_socket);
+    free(workers);
     exit(EXIT_SUCCESS);
 }
 
@@ -304,7 +330,7 @@ int parent(int domain_socket)
     return 0;
 }
 
-int socketfork(void)
+int socketfork(int workers_num)
 {
     int   sv[2];
     pid_t pid;
@@ -320,7 +346,7 @@ int socketfork(void)
     if(pid == 0)
     {
         close(sv[0]);
-        start_monitor(sv[1]);
+        start_monitor(sv[1], workers_num);
     }
     else if(pid > 0)
     {
@@ -334,6 +360,34 @@ int socketfork(void)
     }
 
     return 0;
+}
+
+void handle_arguments(int argc, char *argv[], int *workers_num)
+{
+    int option;
+    while((option = getopt(argc, argv, "w:")) != -1)
+    {
+        if(option == 'w')
+        {
+            long  val;
+            char *endptr;
+            errno = 0;
+            val   = strtol(optarg, &endptr, BASE);
+
+            if(errno != 0 || *endptr != '\0' || val < MIN_WORKERS || val > MAX_WORKERS)
+            {
+                printf("must be an integer between %d and %d.\n", MIN_WORKERS, MAX_WORKERS);
+                exit(EXIT_FAILURE);
+            }
+
+            *workers_num = (int)val;
+        }
+        else
+        {
+            perror("Error invalid command line args");
+            exit(EXIT_FAILURE);
+        }
+    }
 }
 
 static void setup_signal_handler(void)
