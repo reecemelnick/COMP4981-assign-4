@@ -338,7 +338,7 @@ int add_to_db(const char *key_str, const char *value_str)
 {
     DBM *db;
 
-    char DATABASE[] = "/Users/reecemelnick/Desktop/COMP4981/assign4/database.db";    // cppcheck-suppress constVariable
+    char DATABASE[] = "/Users/developer/rm4/database.db";    // cppcheck-suppress constVariable
 
     db = dbm_open(DATABASE, O_RDWR | O_CREAT, PERMISSIONS);
     if(db == NULL)
@@ -437,7 +437,7 @@ int find_in_db(const char *key_str, char *returned_value, size_t max_len)
     DBM  *db;
     char *retrieved_str;
 
-    char DATABASE[] = "/Users/reecemelnick/Desktop/COMP4981/assign4/database.db";    // cppcheck-suppress constVariable
+    char DATABASE[] = "/Users/developer/rm4/database.db";    // cppcheck-suppress constVariable
 
     db = dbm_open(DATABASE, O_RDONLY, PERMISSIONS);    // Open as read-only
     if(db == NULL)
@@ -467,7 +467,7 @@ void read_all_entries(void)
     DBM  *db;
     datum key;
 
-    char DATABASE[] = "/Users/reecemelnick/Desktop/COMP4981/assign4/database.db";    // cppcheck-suppress constVariable
+    char DATABASE[] = "/Users/developer/rm4/database.db";    // cppcheck-suppress constVariable
 
     db = dbm_open(DATABASE, O_RDONLY, 0);
     if(db == NULL)
@@ -489,9 +489,9 @@ void read_all_entries(void)
 #pragma GCC diagnostic pop
 
         printf("Key: ");
-        fwrite(key.dptr, 1, (size_t)key.dsize, stdout);
+        fwrite(key.dptr, 1, key.dsize, stdout);
         printf(", Value: ");
-        fwrite(value.dptr, 1, (size_t)value.dsize, stdout);
+        fwrite(value.dptr, 1, value.dsize, stdout);
         printf("\n");
 
 #pragma GCC diagnostic push
@@ -649,7 +649,7 @@ int serve_file(const char *uri, const char *method, int client_sock)
     char filepath[BUFFER_SIZE];
     int  retval;
 
-    snprintf(filepath, sizeof(filepath), "/Users/reecemelnick/Desktop/COMP4981/assign4/public/%s", uri);
+    snprintf(filepath, sizeof(filepath), "/Users/developer/rm4/public/%s", uri);
 
     retval = check_file_status(filepath);
     if(retval != OK_STATUS)

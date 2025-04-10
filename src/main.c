@@ -95,7 +95,7 @@ void worker(int domain_socket, sem_t *semaphore)
     int (*worker_handle)(int, sem_t *);
     struct stat lib_stat;
     struct stat prev_lib_stat;
-    const char *lib_path = "/Users/reecemelnick/Desktop/COMP4981/assign4/src/libmylib.so";
+    const char *lib_path = "/Users/developer/rm4/src/libmylib.so";
 
     // initially set prev_lib_stat so we can compare changes
     if(stat(lib_path, &prev_lib_stat) == -1)
@@ -181,7 +181,7 @@ _Noreturn void start_monitor(int domain_socket, int workers_num)
         exit(EXIT_FAILURE);
     }
 
-    workers = malloc(sizeof(pid_t) * (size_t)workers_num);
+    workers = (pid_t *)malloc(sizeof(pid_t) * (size_t)workers_num);
     if(workers == NULL)
     {
         perror("malloc failed");
